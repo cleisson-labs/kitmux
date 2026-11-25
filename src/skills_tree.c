@@ -305,13 +305,9 @@ int km_skill_inspect(Km *km, KmSkill *skill) {
     return 0;
 }
 
-static int remove_tree_at(int parent, const char *name) {
-    DIR *directory = open_directory_stream(parent, name);
-    if (!directory) {
-        if (errno == ENOENT) return 0;
-        if (errno != ENOTDIR && errno != ELOOP) return -1;
-        return unlinkat(parent, name, 0) == 0 || errno == ENOENT ? 0 : -1;
-    }
+static int remove_tree_at(int parent, const char *name);
+
+static int remove_directory(int parent, const char *name, DIR *directory) {
     int fd = dirfd(directory);
     /* Only the opened directory needs write permission to remove its children. */
     struct stat st;
@@ -336,6 +332,14 @@ static int remove_tree_at(int parent, const char *name) {
     if (closedir(directory) && !result) return -1;
     errno = saved;
     return result;
+}
+
+static int remove_tree_at(int parent, const char *name) {
+    DIR *directory = open_directory_stream(parent, name);
+    if (directory) return remove_directory(parent, name, directory);
+    if (errno == ENOENT) return 0;
+    if (errno != ENOTDIR && errno != ELOOP) return -1;
+    return unlinkat(parent, name, 0) == 0 || errno == ENOENT ? 0 : -1;
 }
 
 int km_skill_remove_tree(const char *path) {
@@ -394,9 +398,17 @@ static int install_at(Km *km, KmSkill *skill, int parent, const char *path) {
             close(winner);
         }
     }
-    bool staged = skill_same_entry(parent, staging, fd);
-    close(fd);
-    if (!staged || remove_tree_at(parent, staging))
+    if (!skill_same_entry(parent, staging, fd)) {
+        close(fd);
+        return km_error(km, "staged skill package %s changed before cleanup", staging);
+    }
+    DIR *directory = fdopendir(fd);
+    if (!directory) {
+        int error = errno;
+        close(fd);
+        return km_error(km, "cannot list staged skill package %s: %s", staging, strerror(error));
+    }
+    if (remove_directory(parent, staging, directory))
         return km_error(km, "cannot clean staged skill package %s: %s", staging, strerror(errno));
     return result;
 }

@@ -567,9 +567,11 @@ static char *norm_basic_str(const char *src, int srclen, int multiline,
           return 0;
         }
         ch = *sp++;
-        int v = ('0' <= ch && ch <= '9')
-                    ? ch - '0'
-                    : (('A' <= ch && ch <= 'F') ? ch - 'A' + 10 : -1);
+        /* Kitmux patch: accept lowercase hex digits, as TOML allows. */
+        int v = ('0' <= ch && ch <= '9')   ? ch - '0'
+                : ('A' <= ch && ch <= 'F') ? ch - 'A' + 10
+                : ('a' <= ch && ch <= 'f') ? ch - 'a' + 10
+                                           : -1;
         if (-1 == v) {
           snprintf(errbuf, errbufsz, "invalid hex chars for \\u or \\U");
           xfree(dst);
@@ -1694,7 +1696,8 @@ static int scan_string(context_t *ctx, char *p, int lineno, int dotisspecial) {
       }
       if (hexreq) {
         hexreq--;
-        if (strchr("0123456789ABCDEF", *p))
+        /* Kitmux patch: TOML permits lowercase hex digits in \u escapes. */
+        if (strchr("0123456789ABCDEFabcdef", *p))
           continue;
         return e_syntax(ctx, lineno, "expect hex char");
       }
@@ -1743,7 +1746,8 @@ static int scan_string(context_t *ctx, char *p, int lineno, int dotisspecial) {
       }
       if (hexreq) {
         hexreq--;
-        if (strchr("0123456789ABCDEF", *p))
+        /* Kitmux patch: TOML permits lowercase hex digits in \u escapes. */
+        if (strchr("0123456789ABCDEFabcdef", *p))
           continue;
         return e_syntax(ctx, lineno, "expect hex char");
       }

@@ -15,6 +15,7 @@
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/cleisson-labs/kitmux"></a>
   <a href="https://github.com/cleisson-labs/kitmux/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/cleisson-labs/kitmux"></a>
   <a href="docs/GUIDE.md#continuous-integration-and-release-provenance"><img alt="Coverage report" src="https://img.shields.io/badge/coverage-report-blue"></a>
+  <a href="https://scorecard.dev/viewer/?uri=github.com/cleisson-labs/kitmux"><img alt="OpenSSF Scorecard" src="https://api.scorecard.dev/projects/github.com/cleisson-labs/kitmux/badge"></a>
 </p>
 
 <p align="center">

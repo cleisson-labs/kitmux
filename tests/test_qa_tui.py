@@ -97,7 +97,7 @@ class QaTerminalTests(TerminalTestCase):
         terminal = self.start()
         terminal.wait_text("Native sync pending")
         terminal.send(b"4")
-        terminal.wait_text("Native sync pending: configuration conflict")
+        terminal.wait_text("Native sync pending: sync failed for claude")
         self.assertIn(b"claude: adopted", terminal.output)
         self.quit(terminal)
 

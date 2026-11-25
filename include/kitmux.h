@@ -8,7 +8,7 @@
 #ifndef PATH_MAX
 #define PATH_MAX 4096
 #endif
-#define KM_VERSION "0.6.0"
+#define KM_VERSION "0.7.0"
 #define KM_MAX_FILE (8u * 1024u * 1024u)
 #define KM_AGENT_COUNT 4
 

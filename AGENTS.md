@@ -9,11 +9,12 @@ run the relevant tests and required checks. Documentation and test-harness work
 do not need a manufactured failing test. Keep this repository self-contained;
 contributors do not need any machine-specific agent skills or configuration.
 
-Build with `make`; run `make test` and `make sanitize`. Dependencies come from
+Build with `make`; run `make test`, `make sanitize`, and `make analyze` (cppcheck) when available. Dependencies come from
 pkg-config: json-c, yaml-0.1, ncursesw, and libcrypto. Never install dependencies
 or mutate live client configuration as part of a test.
 
-CI targets macOS 15 and Ubuntu 22.04, each on arm64 and x86_64. Release builds use
+CI targets macOS 15 and Ubuntu 22.04, each on arm64 and x86_64; the single required
+check is `ci-ok`. Keep workflow actions pinned to commit SHAs with least privileges. Release builds use
 `make release VERSION=vX.Y.Z`, pinned source archives, and private dependency
 prefixes; never install their bundled libraries globally. Keep native tests
 opt-in, and check packaged binaries without development libraries before release.
@@ -24,7 +25,8 @@ then `sh scripts/check-leaks.sh build-sanitize/kitmux`. Leak scans at process ex
 otherwise consume the timing tests' budgets; keep all timing assertions intact.
 Linux x86_64 retains leak detection throughout the complete sanitizer suite.
 
-`make test-native` opts into installed-client qualification. Keep its client homes,
+`make test-native` opts into installed-client qualification, including the Antigravity
+CLI (`agy`) through offline commands under `sandbox-exec`. Keep its client homes,
 authentication, provider responses, and MCPs isolated; use synthetic loopback
 providers and never load live accounts. Normal tests skip these probes.
 The target covers both managed MCP lifecycle and custom subagent discovery/off/on.

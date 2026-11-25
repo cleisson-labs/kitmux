@@ -111,18 +111,17 @@ static int field_span(Km *km, const char *text, const char *key, size_t *start, 
 static int edit_field(Km *km, char **text, const char *key, const char *value) {
     size_t begin=0,end=0;
     if (field_span(km,*text,key,&begin,&end)<0) return -1;
-    json_object *string=json_object_new_string(value);
-    const char *quoted=json_object_to_json_string_ext(string,JSON_C_TO_STRING_PLAIN|JSON_C_TO_STRING_NOSLASHESCAPE);
-    int result=ad_replace(km,text,begin,end,quoted);
-    json_object_put(string); return result;
+    char *quoted=km_subagent_toml_quote(value);
+    int result=quoted ? ad_replace(km,text,begin,end,quoted) : km_error(km,"out of memory");
+    free(quoted); return result;
 }
 
 char *km_subagent_toml_edit(Km *km, const char *text, const char *id,
                            const char *description, const char *instructions) {
     json_object *doc=km_subagent_toml(km,text);
     if (!doc) return NULL;
-    char *result=strdup(text); int status=0;
-    if (strcmp(km_string(doc,"name"),id)) status=edit_field(km,&result,"name",id);
+    char *result=strdup(text); int status=result ? 0 : km_error(km,"out of memory");
+    if (!status && strcmp(km_string(doc,"name"),id)) status=edit_field(km,&result,"name",id);
     if (!status && description) status=edit_field(km,&result,"description",description);
     if (!status && instructions) status=edit_field(km,&result,"developer_instructions",instructions);
     json_object_put(doc);

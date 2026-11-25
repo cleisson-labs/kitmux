@@ -13,6 +13,14 @@ json_object *km_subagent_parse(Km *km, const char *text, const char *format, con
 char *km_subagent_render(Km *km, json_object *resource, const char *id, const char *client);
 int km_subagent_validate(Km *km, const char *id, json_object *resource);
 bool km_subagent_compatible(json_object *resource, const char *client, char *reason, size_t size);
+/* Renders and parses back every compatible client variant, so anything accepted
+ * here can be projected and displayed. Errors name the failing client. When
+ * journal_bytes is set, it receives the worst-case ownership-journal footprint. */
+int km_subagent_check(Km *km, const char *id, json_object *resource, size_t *journal_bytes);
+/* True when policy assigns the profile to client but it has no usable variant. */
+bool km_subagent_unusable_assignment(Km *km, const char *id, const char *client);
+/* Existing ID equal to id except for letter case, or NULL. */
+const char *km_subagent_case_twin(Km *km, const char *id);
 
 /* Codec internals. Parsed documents contain description, instructions, optional
  * name and disabled. Editors change only the requested common fields.
@@ -24,4 +32,8 @@ char *km_subagent_markdown_edit(Km *km, const char *text, const char *client,
 json_object *km_subagent_toml(Km *km, const char *text);
 char *km_subagent_toml_edit(Km *km, const char *text, const char *id,
                            const char *description, const char *instructions);
+char *km_subagent_markdown_disable(Km *km, const char *text);
+/* Double-quoted scalars that every Kitmux parser and native client accepts. */
+char *km_subagent_yaml_quote(const char *value);
+char *km_subagent_toml_quote(const char *value);
 #endif

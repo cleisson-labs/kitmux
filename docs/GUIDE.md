@@ -421,6 +421,11 @@ Removing a skill detaches its owned projections after sync and cleans group
 membership. Source repositories and cached revisions remain. Cache pruning and
 full textual update diffs are not implemented yet.
 
+After an interrupted skill link update, retry `kitmux sync --apply`. If Kitmux
+reports an unfamiliar entry in a `.kitmux-<skill>.pending` directory, inspect
+the live link and the saved entry. Move content you want to keep to a safe
+location before removing the empty recovery directory and retrying the sync.
+
 ### Kitmux usage skill
 
 The included [Kitmux skill](../skills/kitmux/SKILL.md) teaches agents the CLI workflow,

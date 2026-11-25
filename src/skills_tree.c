@@ -1,4 +1,6 @@
 #include "skills_internal.h"
+#include "skill_fs.h"
+#include <openssl/rand.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -18,15 +20,13 @@
 
 typedef struct {
     Km *km;
-    const char *root;
-    const char *destination;
     EVP_MD_CTX *digest;
     size_t count;
     size_t bytes;
 } Tree;
 
-static int entry_order(const struct dirent **left, const struct dirent **right) {
-    return strcmp((*left)->d_name, (*right)->d_name);
+static int entry_order(const void *left, const void *right) {
+    return strcmp(*(char *const *)left, *(char *const *)right);
 }
 
 static bool safe_entry_name(const char *name) {
@@ -78,12 +78,12 @@ static int copy_bytes(Tree *tree, int input, int output, size_t expected) {
     return total == expected ? 0 : km_error(tree->km, "skill file changed while reading");
 }
 
-static int visit_file(Tree *tree, const char *relative, const char *path,
-                      const struct stat *before) {
+static int visit_file(Tree *tree, const char *relative, int source, const char *name, const struct stat *before,
+                      int destination) {
     if (before->st_size < 0 || (unsigned long long)before->st_size > KM_MAX_FILE ||
         (size_t)before->st_size > SKILL_MAX_TOTAL - tree->bytes)
         return km_error(tree->km, "skill package exceeds file or total size limit");
-    int input = open(path, O_RDONLY | O_NOFOLLOW);
+    int input = openat(source, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
     struct stat actual;
     if (input < 0) return km_error(tree->km, "cannot read skill file: %s", strerror(errno));
     if (fstat(input, &actual) || !S_ISREG(actual.st_mode) || actual.st_ino != before->st_ino ||
@@ -100,14 +100,9 @@ static int visit_file(Tree *tree, const char *relative, const char *path,
         return km_error(tree->km, "cannot hash skill package");
     }
     int output = -1;
-    char target[PATH_MAX];
-    if (tree->destination) {
-        if (km_path(tree->km, target, sizeof(target), "%s/%s", tree->destination, relative)) {
-            close(input);
-            return -1;
-        }
-        output = open(target, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW,
-                      actual.st_mode & 0111 ? SKILL_EXECUTABLE_MODE : SKILL_FILE_MODE);
+    if (destination >= 0) {
+        output = openat(destination, name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+                        actual.st_mode & 0111 ? SKILL_EXECUTABLE_MODE : SKILL_FILE_MODE);
         if (output < 0) {
             close(input);
             return km_error(tree->km, "cannot create skill file: %s", strerror(errno));
@@ -123,57 +118,97 @@ static int visit_file(Tree *tree, const char *relative, const char *path,
     return result;
 }
 
-static int walk(Tree *tree, const char *relative, unsigned depth) {
+/* scandirat is unavailable on macOS. Read names from the opened directory and
+ * sort by bytes to preserve the existing, locale-independent package digest. */
+static int sorted_names(Tree *tree, DIR *directory, char ***names, size_t *count) {
+    size_t capacity = 0;
+    for (;;) {
+        errno = 0;
+        struct dirent *entry = readdir(directory);
+        if (!entry) {
+            if (errno) return km_error(tree->km, "cannot list skill package: %s", strerror(errno));
+            break;
+        }
+        const char *name = entry->d_name;
+        if (!strcmp(name, ".") || !strcmp(name, "..") || !strcmp(name, ".git")) continue;
+        if (!safe_entry_name(name)) return km_error(tree->km, "skill package has an unsafe filename");
+        if (*count >= SKILL_MAX_ENTRIES - tree->count)
+            return km_error(tree->km, "skill package has too many entries or nested directories");
+        if (*count == capacity) {
+            capacity = capacity ? 2 * capacity : 16;
+            char **grown = realloc(*names, capacity * sizeof(*grown));
+            if (!grown) return km_error(tree->km, "cannot allocate skill directory entries");
+            *names = grown;
+        }
+        (*names)[*count] = strdup(name);
+        if (!(*names)[*count]) return km_error(tree->km, "cannot allocate skill directory entry");
+        ++*count;
+    }
+    if (*count > 1) qsort(*names, *count, sizeof(**names), entry_order);
+    return 0;
+}
+
+static DIR *open_directory_stream(int parent, const char *name) {
+    int fd = openat(parent, name, SKILL_DIR_FLAGS);
+    if (fd < 0) return NULL;
+    DIR *directory = fdopendir(fd);
+    if (!directory) {
+        int saved = errno;
+        close(fd);
+        errno = saved;
+    }
+    return directory;
+}
+
+static int walk(Tree *tree, const char *relative, int source, const char *name, unsigned depth, int destination) {
     if (depth > KM_SKILL_MAX_DEPTH || ++tree->count > SKILL_MAX_ENTRIES)
         return km_error(tree->km, "skill package has too many entries or nested directories");
-    char path[PATH_MAX];
-    if (km_path(tree->km, path, sizeof(path), "%s%s%s", tree->root,
-                 *relative ? "/" : "", relative)) return -1;
     struct stat st;
-    if (lstat(path, &st)) return km_error(tree->km, "cannot inspect skill package: %s", strerror(errno));
+    if (fstatat(source, name, &st, AT_SYMLINK_NOFOLLOW))
+        return km_error(tree->km, "cannot inspect skill package: %s", strerror(errno));
     if (S_ISLNK(st.st_mode)) return km_error(tree->km, "symlinks are not supported in skill packages");
-    if (S_ISREG(st.st_mode)) return visit_file(tree, relative, path, &st);
+    if (S_ISREG(st.st_mode)) return visit_file(tree, relative, source, name, &st, destination);
     if (!S_ISDIR(st.st_mode)) return km_error(tree->km, "special files are not supported in skill packages");
     if (EVP_DigestUpdate(tree->digest, relative, strlen(relative) + 1) != 1)
         return km_error(tree->km, "cannot hash skill directory");
-    if (tree->destination && *relative) {
-        char target[PATH_MAX];
-        if (km_path(tree->km, target, sizeof(target), "%s/%s", tree->destination, relative) ||
-            km_mkdirs(tree->km, target)) return -1;
-    }
-    struct dirent **entries = NULL;
-    int count = scandir(path, &entries, NULL, entry_order);
-    if (count < 0) return km_error(tree->km, "cannot list skill package: %s", strerror(errno));
-    int result = 0;
-    for (int i = 0; i < count; ++i) {
-        const char *name = entries[i]->d_name;
-        if (!result && !safe_entry_name(name)) result = km_error(tree->km, "skill package has an unsafe filename");
-        if (!result && strcmp(name, ".") && strcmp(name, "..") && strcmp(name, ".git")) {
-            char child[PATH_MAX];
-            if (km_path(tree->km, child, sizeof(child), "%s%s%s", relative, *relative ? "/" : "", name))
-                result = -1;
-            else result = walk(tree, child, depth + 1);
+    DIR *directory = open_directory_stream(source, name);
+    if (!directory) return km_error(tree->km, "cannot list skill directory: %s", strerror(errno));
+    int child_dir = destination;
+    if (destination >= 0 && depth > 0) {
+        if (mkdirat(destination, name, 0700) || (child_dir = openat(destination, name, SKILL_DIR_FLAGS)) < 0) {
+            closedir(directory);
+            return km_error(tree->km, "cannot create staged skill directory: %s", strerror(errno));
         }
-        free(entries[i]);
     }
-    free(entries);
-    if (!result && tree->destination) {
-        char target[PATH_MAX];
-        result = km_path(tree->km, target, sizeof(target), "%s%s%s", tree->destination, *relative ? "/" : "", relative);
-        if (!result) result = sync_directory(tree->km, target);
-        /* The staging root stays writable until it is published: macOS 15 refuses
-         * to rename a directory that lacks write permission. */
-        if (!result && *relative && chmod(target, SKILL_DIRECTORY_MODE))
-            result = km_error(tree->km, "cannot protect installed skill directory %s: %s", target, strerror(errno));
+    char **names = NULL;
+    size_t count = 0;
+    int result = sorted_names(tree, directory, &names, &count);
+    for (size_t i = 0; i < count; ++i) {
+        if (!result) {
+            char child[PATH_MAX];
+            result = km_path(tree->km, child, sizeof(child), "%s%s%s", relative, *relative ? "/" : "", names[i]);
+            if (!result) result = walk(tree, child, dirfd(directory), names[i], depth + 1, child_dir);
+        }
+        free(names[i]);
+    }
+    free(names);
+    closedir(directory);
+    if (child_dir >= 0) {
+        /* macOS needs a writable staging root until publication. */
+        if (!result && depth > 0 && fchmod(child_dir, SKILL_DIRECTORY_MODE))
+            result = km_error(tree->km, "cannot protect staged skill directory: %s", strerror(errno));
+        if (!result && fsync(child_dir))
+            result = km_error(tree->km, "cannot sync staged skill directory: %s", strerror(errno));
+        if (depth > 0) close(child_dir);
     }
     return result;
 }
 
-static int hash_tree(Km *km, const char *root, const char *destination, char hash[65]) {
+static int hash_directory(Km *km, int root, int destination, char hash[65]) {
     EVP_MD_CTX *digest = EVP_MD_CTX_new();
     if (!digest) return km_error(km, "cannot allocate skill hash");
-    Tree tree = {.km = km, .root = root, .destination = destination, .digest = digest};
-    int result = EVP_DigestInit_ex(digest, EVP_sha256(), NULL) == 1 ? walk(&tree, "", 0) : -1;
+    Tree tree = {.km = km, .digest = digest};
+    int result = EVP_DigestInit_ex(digest, EVP_sha256(), NULL) == 1 ? walk(&tree, "", root, ".", 0, destination) : -1;
     unsigned char bytes[32];
     unsigned count = 0;
     if (!result && (EVP_DigestFinal_ex(digest, bytes, &count) != 1 || count != 32)) result = -1;
@@ -181,6 +216,14 @@ static int hash_tree(Km *km, const char *root, const char *destination, char has
     if (result) return *km->error ? -1 : km_error(km, "cannot hash skill package");
     for (unsigned i = 0; i < count; ++i) snprintf(hash + i * 2, 3, "%02x", bytes[i]);
     return 0;
+}
+
+static int hash_tree(Km *km, const char *root, int destination, char hash[65]) {
+    int source = open(root, SKILL_DIR_FLAGS);
+    if (source < 0) return km_error(km, "cannot open skill package: %s", strerror(errno));
+    int result = hash_directory(km, source, destination, hash);
+    close(source);
+    return result;
 }
 
 static bool skill_name(const char *name) {
@@ -257,56 +300,124 @@ static int inspect_frontmatter(Km *km, KmSkill *skill) {
 }
 
 int km_skill_inspect(Km *km, KmSkill *skill) {
-    if (hash_tree(km, skill->root, NULL, skill->hash) || inspect_frontmatter(km, skill)) return -1;
+    if (hash_tree(km, skill->root, -1, skill->hash) || inspect_frontmatter(km, skill)) return -1;
     if (!*skill->revision) snprintf(skill->revision, sizeof(skill->revision), "local-%s", skill->hash);
     return 0;
 }
 
-int km_skill_remove_tree(const char *path) {
-    struct stat st;
-    if (lstat(path, &st)) return errno == ENOENT ? 0 : -1;
-    if (!S_ISDIR(st.st_mode) || S_ISLNK(st.st_mode)) return unlink(path);
-    /* Staged packages are read-only; restore owner write access before removal. */
-    if (chmod(path, 0700)) return -1;
-    DIR *directory = opendir(path);
-    if (!directory) return -1;
-    struct dirent *entry;
-    int result = 0;
-    while ((entry = readdir(directory))) {
-        if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
-        char child[PATH_MAX];
-        int length = snprintf(child, sizeof(child), "%s/%s", path, entry->d_name);
-        if (length < 0 || (size_t)length >= sizeof(child) || km_skill_remove_tree(child)) result = -1;
+static int remove_tree_at(int parent, const char *name) {
+    DIR *directory = open_directory_stream(parent, name);
+    if (!directory) {
+        if (errno == ENOENT) return 0;
+        if (errno != ENOTDIR && errno != ELOOP) return -1;
+        return unlinkat(parent, name, 0) == 0 || errno == ENOENT ? 0 : -1;
     }
-    closedir(directory);
-    return result ? result : rmdir(path);
+    int fd = dirfd(directory);
+    /* Only the opened directory needs write permission to remove its children. */
+    struct stat st;
+    int result = fstat(fd, &st);
+    if (!result && st.st_uid != geteuid()) {
+        errno = EPERM;
+        result = -1;
+    }
+    if (!result && (st.st_mode & 0777) != 0700) result = fchmod(fd, 0700);
+    while (!result) {
+        errno = 0;
+        struct dirent *entry = readdir(directory);
+        if (!entry) {
+            if (errno) result = -1;
+            break;
+        }
+        if (strcmp(entry->d_name, ".") && strcmp(entry->d_name, "..")) result = remove_tree_at(fd, entry->d_name);
+    }
+    if (!result && (!skill_same_entry(parent, name, fd) || unlinkat(parent, name, AT_REMOVEDIR)) && errno != ENOENT)
+        result = -1;
+    int saved = errno;
+    if (closedir(directory) && !result) return -1;
+    errno = saved;
+    return result;
+}
+
+int km_skill_remove_tree(const char *path) {
+    const char *name;
+    int parent = skill_open_parent(path, false, &name);
+    if (parent < 0) return errno == ENOENT ? 0 : -1;
+    int result = remove_tree_at(parent, name);
+    close(parent);
+    return result;
 }
 
 void km_skill_cleanup(KmSkill *skill) {
-    if (*skill->temporary) km_skill_remove_tree(skill->temporary);
-    skill->temporary[0] = 0;
+    if (*skill->temporary && !km_skill_remove_tree(skill->temporary)) skill->temporary[0] = 0;
+}
+
+/* Verify a published cache entry before reuse, including a previous install that
+ * stopped between its exclusive rename and the final read-only permission change. */
+static int reuse_installed(Km *km, int parent, int fd, const char *path, const char *expected) {
+    char actual[65];
+    if (hash_directory(km, fd, -1, actual)) return -1;
+    if (strcmp(actual, expected)) return km_error(km, "installed skill package was modified");
+    if (!skill_same_entry(parent, expected, fd)) return km_error(km, "skill store entry changed during verification");
+    struct stat st;
+    if (fstat(fd, &st) || ((st.st_mode & 07777) != SKILL_DIRECTORY_MODE && fchmod(fd, SKILL_DIRECTORY_MODE)) ||
+        fsync(fd))
+        return km_error(km, "cannot protect installed skill directory %s: %s", path, strerror(errno));
+    return 0;
+}
+
+static int install_at(Km *km, KmSkill *skill, int parent, const char *path) {
+    unsigned char random[12];
+    if (RAND_bytes(random, sizeof(random)) != 1) return km_error(km, "cannot generate skill staging name");
+    char staging[sizeof(".install-") + 2 * sizeof(random)] = ".install-";
+    for (size_t i = 0; i < sizeof(random); ++i)
+        snprintf(staging + sizeof(".install-") - 1 + 2 * i, 3, "%02x", random[i]);
+    if (mkdirat(parent, staging, 0700)) return km_error(km, "cannot stage skill package: %s", strerror(errno));
+    int fd = skill_open_private(parent, staging);
+    if (fd < 0) return km_error(km, "cannot open skill staging directory %s: %s", staging, strerror(errno));
+    char copied[65];
+    int result = hash_tree(km, skill->root, fd, copied);
+    if (!result && strcmp(copied, skill->hash)) result = km_error(km, "source changed during skill installation");
+    if (!result && skill_same_entry(parent, staging, fd) &&
+        skill_rename_exclusive(parent, staging, parent, skill->hash) == 0) {
+        if (!skill_same_entry(parent, skill->hash, fd) || fchmod(fd, SKILL_DIRECTORY_MODE) || fsync(fd))
+            result = km_error(km, "cannot protect installed skill directory %s: %s", path, strerror(errno));
+        close(fd);
+        return result;
+    }
+    if (!result) {
+        int winner = -1;
+        if (errno == EEXIST || errno == ENOTEMPTY) winner = openat(parent, skill->hash, SKILL_DIR_FLAGS);
+        if (winner < 0)
+            result = km_error(km, "cannot publish skill package: %s", strerror(errno));
+        else {
+            result = reuse_installed(km, parent, winner, path, skill->hash);
+            close(winner);
+        }
+    }
+    bool staged = skill_same_entry(parent, staging, fd);
+    close(fd);
+    if (!staged || remove_tree_at(parent, staging))
+        return km_error(km, "cannot clean staged skill package %s: %s", staging, strerror(errno));
+    return result;
 }
 
 int km_skill_store(Km *km, KmSkill *skill, char *out, size_t size) {
-    char parent[PATH_MAX], staging[PATH_MAX];
+    char parent[PATH_MAX];
     if (km_path(km, parent, sizeof(parent), "%s/skills/%s", km->data, skill->name) ||
-        km_mkdirs(km, parent) || km_path(km, out, size, "%s/%s", parent, skill->hash)) return -1;
-    struct stat st;
-    if (!lstat(out, &st)) {
-        char existing_hash[65];
-        if (!S_ISDIR(st.st_mode) || S_ISLNK(st.st_mode)) return km_error(km, "skill store path is not a regular directory");
-        if (hash_tree(km, out, NULL, existing_hash)) return -1;
-        return strcmp(existing_hash, skill->hash) ? km_error(km, "installed skill package was modified") : sync_ancestry(km, parent);
-    }
-    if (errno != ENOENT) return km_error(km, "cannot inspect skill store: %s", strerror(errno));
-    if (km_path(km, staging, sizeof(staging), "%s/.install-XXXXXX", parent) || !mkdtemp(staging))
-        return km_error(km, "cannot stage skill package: %s", strerror(errno));
-    char copied_hash[65];
-    int result = hash_tree(km, skill->root, staging, copied_hash);
-    if (!result && strcmp(copied_hash, skill->hash)) result = km_error(km, "source changed during skill installation");
-    if (!result && rename(staging, out)) result = km_error(km, "cannot publish skill package: %s", strerror(errno));
-    else if (!result && chmod(out, SKILL_DIRECTORY_MODE))
-        return km_error(km, "cannot protect installed skill directory %s: %s", out, strerror(errno));
-    if (result) km_skill_remove_tree(staging);
+        km_path(km, out, size, "%s/%s", parent, skill->hash))
+        return -1;
+    int dir = skill_open_directory(parent, true);
+    if (dir < 0) return km_error(km, "cannot open skill store: %s", strerror(errno));
+    int existing = openat(dir, skill->hash, SKILL_DIR_FLAGS);
+    int result;
+    if (existing >= 0) {
+        result = reuse_installed(km, dir, existing, out, skill->hash);
+        close(existing);
+    } else if (errno == ENOENT) {
+        result = install_at(km, skill, dir, out);
+    } else
+        result = km_error(km, "skill store path is not a regular directory: %s", strerror(errno));
+    if (!result && fsync(dir)) result = km_error(km, "cannot sync skill store: %s", strerror(errno));
+    close(dir);
     return result ? result : sync_ancestry(km, parent);
 }

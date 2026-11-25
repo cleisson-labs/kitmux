@@ -78,10 +78,10 @@ static int unowned_link(Km *km, const char *agent, const char *path, const LinkS
 static int link_change(AdRun *run, const char *agent, const char *path, const char *target, bool adopt) {
     const char *id=strrchr(path,'/');
     if (!id || !projection_path(run->km,agent,path,id+1)) return km_error(run->km,"%s: unsafe skill projection path %s",agent,path);
-    if (real_parents(run->km,agent,path)<0) return -1;
+    json_object *record = km_get(links(run), path);
+    if (real_parents(run->km, agent, path) < 0 || ad_recover_skill_link(run, path, record) < 0) return -1;
     LinkState now;
-    if (read_link(run->km,agent,path,&now)<0) return -1;
-    json_object *record=km_get(links(run),path);
+    if (read_link(run->km, agent, path, &now) < 0) return -1;
     if (record) {
         bool pending=json_object_get_boolean(km_get(run->state,"pending"));
         bool expected=link_is(&now,km_string(record,"after"));

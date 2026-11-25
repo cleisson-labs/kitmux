@@ -1,4 +1,4 @@
-#include "adapters.h"
+#include "adapters_skills.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <stdarg.h>
@@ -217,47 +217,6 @@ static int check_file(AdRun *run, AdFile *file) {
     return same ? 0 : km_error(run->km,"%s changed during sync; run the command again",file->path);
 }
 
-static int sync_link_parent(Km *km, const char *path) {
-    char parent[PATH_MAX];
-    if (km_path(km,parent,sizeof(parent),"%s",path)<0) return -1;
-    char *slash=strrchr(parent,'/');
-    if (!slash || slash==parent) return km_error(km,"invalid skill projection parent");
-    *slash=0;
-    int fd=open(parent,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
-    if (fd<0) return km_error(km,"cannot open skill projection directory %s for sync: %s",parent,strerror(errno));
-    int result=fsync(fd); close(fd);
-    return result<0 ? km_error(km,"cannot sync skill projection directory %s",parent) : 0;
-}
-
-static int apply_link(AdRun *run, json_object *link) {
-    const char *path=km_string(link,"path"), *target=km_string(link,"target");
-    const char *before=km_string(link,"before");
-    struct stat st; char actual[PATH_MAX];
-    bool exists=lstat(path,&st)==0;
-    if (exists) {
-        ssize_t n=readlink(path,actual,sizeof(actual)-1);
-        if (n<0 || (size_t)n>=sizeof(actual)-1) return km_error(run->km,"skill projection %s is no longer a link; retry `kitmux sync --apply`",path);
-        actual[n]=0;
-        if (!before || strcmp(actual,before)) return km_error(run->km,"skill projection %s changed during sync; retry `kitmux sync --apply`",path);
-    } else if (errno!=ENOENT || before) return km_error(run->km,"skill projection %s changed during sync; retry `kitmux sync --apply`",path);
-    if (target && exists && !strcmp(actual,target)) return 0;
-    if (!target) {
-        if (!exists) return 0;
-        if (unlink(path)<0) return km_error(run->km,"cannot detach skill projection %s: %s",path,strerror(errno));
-        return sync_link_parent(run->km,path);
-    }
-    char parent[PATH_MAX], temporary[PATH_MAX];
-    snprintf(parent,sizeof(parent),"%s",path); *strrchr(parent,'/')=0;
-    if (km_mkdirs(run->km,parent)<0) return -1;
-    if (km_path(run->km,temporary,sizeof(temporary),"%s.kitmux-%ld",path,(long)getpid())<0) return -1;
-    if (symlink(target,temporary)<0) return km_error(run->km,"cannot stage skill projection %s: %s",path,strerror(errno));
-    if (rename(temporary,path)<0) {
-        int saved=errno; unlink(temporary);
-        return km_error(run->km,"cannot apply skill projection %s: %s",path,strerror(saved));
-    }
-    return sync_link_parent(run->km,path);
-}
-
 /* One unwritable file must not stop the other clients' native writes. */
 static bool file_changed(const AdFile *file) {
     if (file->remove) return file->existed;
@@ -318,7 +277,7 @@ int ad_finish(AdRun *run) {
     char failed[sizeof(run->km->error)]="";
     write_native(run,failed,sizeof(failed));
     for (size_t i=0;i<json_object_array_length(run->links);i++)
-        if (apply_link(run,json_object_array_get_idx(run->links,i))<0) return -1;
+        if (ad_apply_skill_link(run, json_object_array_get_idx(run->links, i)) < 0) return -1;
     if (ad_subagent_apply_actions(run)<0) return -1;
     if (run->management) {
         json_object *management=object_at(run->state,"managed_agents");

@@ -145,7 +145,7 @@ static void print_resources(json_object *resources, const char *kind) {
         json_object *agents = km_get(resource, "agents");
         for (size_t i = 0; i < KM_AGENT_COUNT; i++) {
             json_object *row = km_get(agents, km_agents[i]);
-            printf("  %-8s %-3s  %s", km_agents[i],
+            printf("  %-11s %-3s  %s", km_agents[i],
                    json_object_get_boolean(km_get(row, "enabled")) ? "on" : "off", km_string(row, "reason"));
             json_object *observation = km_get(row, "runtime_status");
             if (observation) { fputs(" | ", stdout); print_observation(observation); }

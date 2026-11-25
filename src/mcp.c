@@ -143,7 +143,8 @@ static int server_list(Km *km) {
     json_object_object_foreach(servers, id, server) {
         const char *transport = km_string(server, "transport"), *mode = km_string(server, "mode");
         printf("%-22s %-10s %-10s", id, transport ? transport : "unknown", mode ? mode : "direct");
-        for (size_t i = 0; i < KM_AGENT_COUNT; ++i) printf(" %-7s", km_effective(km, "mcp", id, km_agents[i], NULL, 0) ? "on" : "off");
+        for (size_t i = 0; i < KM_AGENT_COUNT; ++i)
+            printf(" %-*s", (int)strlen(km_agents[i]), km_effective(km, "mcp", id, km_agents[i], NULL, 0) ? "on" : "off");
         putchar('\n');
     }
     return 0;

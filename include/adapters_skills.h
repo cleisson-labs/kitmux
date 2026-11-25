@@ -3,6 +3,8 @@
 #include "adapters.h"
 
 /* Internal contracts shared by the skill projection, import, and OpenCode rule modules. */
+int ad_recover_skill_link(AdRun *run, const char *path, json_object *record);
+int ad_apply_skill_link(AdRun *run, json_object *link);
 void ad_release_skill_link(AdRun *run, const char *path);
 bool ad_skill_link_owned(AdRun *run, const char *path);
 int ad_codex_skill_allowed(AdRun *run, const char *id, const char *path);

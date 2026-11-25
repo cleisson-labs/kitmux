@@ -176,18 +176,22 @@ class AdoptionScopeTests(NativeSyncCase):
 
 
 class ProjectionTests(NativeSyncCase):
-    SECRET = {"mcpServers": {"secretive": {"command": "/usr/bin/true", "env": {"API_TOKEN": "sk-FAKE"}}}}
+    ENV_REFERENCE = "${KITMUX_QA_TOKEN}"
+    CLAUDE_ONLY = {
+        "mcpServers": {"secretive": {"command": "/usr/bin/true", "env": {"API_TOKEN": ENV_REFERENCE}}}
+    }
 
     def test_unassigned_mcp_credentials_are_not_projected(self):
-        self.native_clients(claude=self.SECRET)
+        self.native_clients(claude=self.CLAUDE_ONLY)
         self.import_all()
         self.cli("mcp", "disable", "alpha", "--agent", "opencode")
+        self.assertEqual(self.claude_servers()["secretive"]["env"]["API_TOKEN"], self.ENV_REFERENCE)
         self.assertNotIn("secretive", self.codex_servers())
         self.assertNotIn("secretive", self.opencode_servers())
-        self.assertNotIn("sk-FAKE", self.codex.read_text() + self.opencode.read_text())
+        self.assertNotIn(self.ENV_REFERENCE, self.codex.read_text() + self.opencode.read_text())
 
     def test_kitmux_created_entry_is_removed_when_turned_off(self):
-        self.native_clients(claude=self.SECRET)
+        self.native_clients(claude=self.CLAUDE_ONLY)
         self.import_all()
         self.cli("mcp", "enable", "secretive", "--agent", "codex")
         self.assertNotIn("enabled", self.codex_servers()["secretive"])

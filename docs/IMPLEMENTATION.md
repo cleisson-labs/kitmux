@@ -96,6 +96,12 @@ atomic transaction. Conflicting external edits are reported rather than replaced
 Restore recovers the adopted originals and releases the selected clients from
 automatic management.
 
+Skill installation publishes a staged revision only into a free hash directory.
+If another installation has already published that hash, Kitmux verifies the
+existing contents. Cleanup and permission changes use open directory descriptors.
+Replacing a managed skill link uses an atomic exchange. The adapter checks the
+displaced entry against the ownership journal before removing it.
+
 Scoped groups use catalog schema v3. Explicit migration splits legacy groups
 without changing resource availability and backs up the original catalog before
 replacement. Ownership journals keep their format with two optional keys:

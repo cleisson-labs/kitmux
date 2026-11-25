@@ -149,6 +149,60 @@ class QaSkillTests(unittest.TestCase):
         self.cli("restore", "--apply")
         self.assertFalse(self.link("claude", "alpha").exists())
 
+    def test_pending_projection_recovery_preserves_saved_entry_and_links(self):
+        self.cli("sync", "--apply")
+        self.cli("skill", "add", self.package("alpha"))
+        self.cli("skill", "enable", "alpha", "--agent", "claude")
+        link = self.link("claude", "alpha")
+        target = os.readlink(link)
+        pending = link.parent / ".kitmux-alpha.pending"
+        pending.mkdir(mode=0o700)
+        saved = pending / "entry"
+        saved.write_text("saved native content")
+
+        for args in (("sync", "--check"), ("sync", "--apply")):
+            result = self.cli(*args, ok=False)
+            self.assertIn(pending.name, result.stderr)
+            self.assertEqual(saved.read_text(), "saved native content")
+            self.assertEqual(os.readlink(link), target)
+        saved.unlink()
+        pending.rmdir()
+        self.cli("sync", "--check")
+
+    def test_pending_journal_recovers_managed_exchange_without_writing_on_check(self):
+        source = self.package("alpha")
+        self.cli("sync", "--apply")
+        self.cli("skill", "add", source)
+        self.cli("skill", "enable", "alpha", "--agent", "claude")
+        link = self.link("claude", "alpha")
+        current = os.readlink(link)
+        journal = self.home / ".local/state/kitmux/adapters.json"
+        pending = link.parent / ".kitmux-alpha.pending"
+
+        for state in ("empty", "before-exchange", "after-exchange"):
+            with self.subTest(state=state):
+                data = json.loads(journal.read_text())
+                data["pending"] = True
+                data["links"][str(link)].update(previous=str(source), after=current)
+                journal.write_text(json.dumps(data))
+                pending.mkdir(mode=0o700)
+                entry = pending / "entry"
+                if state == "before-exchange":
+                    link.unlink()
+                    link.symlink_to(source)
+                    entry.symlink_to(current)
+                elif state == "after-exchange":
+                    entry.symlink_to(source)
+
+                self.cli("sync", "--check", ok=False)
+                self.assertTrue(pending.is_dir())
+                self.assertEqual(entry.is_symlink(), state != "empty")
+                self.cli("sync", "--apply")
+                self.assertFalse(pending.exists())
+                self.assertEqual(os.readlink(link), current)
+                self.assertFalse(json.loads(journal.read_text())["pending"])
+                self.cli("sync", "--check")
+
     def test_changed_projection_conflict_names_path_and_refresh_resolves_it(self):
         self.cli("sync", "--apply")
         self.cli("skill", "add", self.package("alpha"))
@@ -220,6 +274,28 @@ class QaSkillTests(unittest.TestCase):
         self.assertEqual(Path(self.skill("alpha")["path"]), installed)
         self.cli("skill", "remove", "alpha")
         self.cli("skill", "add", source)
+
+    def test_cached_package_recovers_root_mode_and_preserves_conflicting_entries(self):
+        source = self.package("alpha")
+        self.cli("skill", "add", source)
+        installed = Path(self.skill("alpha")["path"])
+        self.cli("skill", "remove", "alpha")
+        installed.chmod(0o700)
+        self.cli("skill", "add", source)
+        self.assertEqual(installed.stat().st_mode & 0o777, 0o500)
+
+        self.cli("skill", "remove", "alpha")
+        installed.chmod(0o700)
+        saved = installed.with_name("saved")
+        installed.rename(saved)
+        installed.symlink_to(saved)
+        self.cli("skill", "add", source, ok=False)
+        self.assertTrue(installed.is_symlink())
+        self.assertEqual(saved.stat().st_mode & 0o777, 0o700)
+        installed.unlink()
+        installed.mkdir()
+        self.cli("skill", "add", source, ok=False)
+        self.assertEqual(list(installed.iterdir()), [])
 
     def test_unprojected_skills_do_not_hide_same_named_native_skills(self):
         self.cli("sync", "--apply")

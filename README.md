@@ -5,7 +5,7 @@ A C terminal manager for MCP servers, Agent Skills, and custom subagents across
 clients receive them, and manage availability from an interactive terminal or
 ordinary commands.
 
-**v0.5.0 · C17 · [MIT](LICENSE)**
+**v0.6.0 · C17 · [MIT](LICENSE)**
 
 - Manage MCP servers, complete skill packages, and custom subagent definitions.
 - Organize each resource view into groups, with explicit controls for each coding client.
@@ -16,7 +16,8 @@ ordinary commands.
 [Contributing](CONTRIBUTING.md) · [Security reporting](SECURITY.md) ·
 [Architecture](docs/IMPLEMENTATION.md) · [Third-party notices](THIRD_PARTY.md)
 
-See [v0.5 notes](docs/V0.5.md) for document views and binary distribution, and
+See [v0.6 notes](docs/V0.6.md) for reliable native sync and terminal fixes,
+[v0.5 notes](docs/V0.5.md) for document views and binary distribution, and
 [v0.4 notes](docs/V0.4.md) for scoped groups and legacy catalog migration.
 
 ## Download and install
@@ -38,7 +39,7 @@ for their original installer to manage.
 ```sh
 (
   set -eu
-  kitmux_version=v0.5.0
+  kitmux_version=v0.6.0
   case "$(uname -s)" in
     Darwin) kitmux_os=darwin ;;
     Linux) kitmux_os=linux ;;
@@ -98,8 +99,8 @@ and verification finish before replacing the executable. Restart coding clients
 after upgrading so managed MCP bridges use the new binary. For binary rollback,
 run `mv "$HOME/.local/bin/kitmux.previous" "$HOME/.local/bin/kitmux"` (adjust the
 directory if overridden). This does not roll back catalog or native configuration;
-use the documented migration backup and `restore` workflow when needed. v0.4 and
-v0.5 use catalog schema 3; versions before v0.4 cannot read that schema.
+use the documented migration backup and `restore` workflow when needed. v0.4,
+v0.5, and v0.6 use catalog schema 3; versions before v0.4 cannot read that schema.
 
 ### Install and import with your local agent
 
@@ -640,7 +641,7 @@ AddressSanitizer and UndefinedBehaviorSanitizer.
 See [implementation progress](docs/IMPLEMENTATION.md), the original
 [product plan](docs/PLAN.md), the [concept diagram](docs/kitmux-concept.html), and
 [third-party notices](THIRD_PARTY.md).
-The [v0.5 release notes](docs/V0.5.md) describe the current release.
+The [v0.6 release notes](docs/V0.6.md) describe the current release.
 
 ## Contributing and license
 

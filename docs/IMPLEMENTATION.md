@@ -1,9 +1,9 @@
 # Architecture and verification
 
-Kitmux 0.5.0 is a C17 terminal application for MCP servers, Agent Skills, custom
+Kitmux 0.6.0 is a C17 terminal application for MCP servers, Agent Skills, custom
 subagents, groups, and assignments to Codex, Claude Code, and OpenCode. See the
-[README](../README.md) for setup and commands and [v0.5 notes](V0.5.md) for the
-current release. Earlier behavior is documented in [v0.4 notes](V0.4.md), [v0.3 notes](V0.3.md),
+[README](../README.md) for setup and commands and [v0.6 notes](V0.6.md) for the
+current release. Earlier behavior is documented in [v0.5 notes](V0.5.md), [v0.4 notes](V0.4.md), [v0.3 notes](V0.3.md),
 [v0.2 notes](V0.2.md), and the
 [import compatibility record](IMPORT_FIX.md).
 
@@ -90,7 +90,7 @@ the first sync, and restore accepts both forms. Older Kitmux
 builds reject schema v3; keep v0.4 for recovery. Native project and organization
 settings keep their own precedence.
 
-## QA review fixes (unreleased)
+## V0.6 QA review fixes
 
 A full review and terminal QA on 25 November 2026 found defects behind three
 reported symptoms: checkbox toggles that did not stick, MCPs that stayed on or off

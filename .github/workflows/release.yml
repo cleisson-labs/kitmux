@@ -5,8 +5,18 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
-permissions:
-  contents: read
+# Tag releases attest SLSA build provenance for every archive and SHA256SUMS
+# (releases published after this workflow change). Verify downloads with
+# GitHub CLI 2.49+, replacing vX.Y.Z and the target:
+#   gh attestation verify kitmux-vX.Y.Z-linux-x86_64.tar.gz \
+#     --repo cleissonom/kitmux \
+#     --signer-workflow cleissonom/kitmux/.github/workflows/release.yml \
+#     --source-ref refs/tags/vX.Y.Z
+#   gh attestation verify SHA256SUMS --repo cleissonom/kitmux \
+#     --signer-workflow cleissonom/kitmux/.github/workflows/release.yml \
+#     --source-ref refs/tags/vX.Y.Z
+
+permissions: {}
 
 concurrency:
   group: release-${{ github.ref }}
@@ -15,6 +25,8 @@ concurrency:
 jobs:
   build:
     name: Qualify ${{ matrix.target }}
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -30,10 +42,10 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.13'
       - name: Check release version
@@ -94,7 +106,7 @@ jobs:
           docker build -t kitmux-release-smoke - < scripts/release-smoke.Dockerfile
           docker run --rm --init -v "$PWD:/work:ro" -v "$RUNNER_TEMP/kitmux-smoke:/artifact:ro" -w /work \
             kitmux-release-smoke sh scripts/smoke-release.sh "/artifact/kitmux-$RELEASE_TAG-$TARGET/kitmux"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: kitmux-${{ matrix.target }}
           path: dist/*.tar.gz
@@ -104,11 +116,14 @@ jobs:
     name: Assemble verified release assets
     needs: build
     runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: kitmux-*
           path: dist
@@ -116,27 +131,52 @@ jobs:
       - name: Verify all targets and checksum
         run: |
           version=$(sed -n 's/^#define KM_VERSION "\([^"]*\)"/\1/p' include/kitmux.h)
-          cd dist
+          cd dist || exit 1
           test "$(find . -name '*.tar.gz' | wc -l)" -eq 4
           for target in darwin-arm64 darwin-x86_64 linux-arm64 linux-x86_64; do
             test -s "kitmux-v$version-$target.tar.gz"
           done
           sha256sum kitmux-*.tar.gz > SHA256SUMS
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: kitmux-release-assets
           path: dist/*
           if-no-files-found: error
 
-  publish:
-    name: Publish complete release
+  attest:
+    name: Attest release provenance
     needs: assets
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: kitmux-release-assets
+          path: dist
+      - name: Verify checksums before signing
+        run: |
+          cd dist || exit 1
+          sha256sum -c SHA256SUMS
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/SHA256SUMS
+
+  publish:
+    name: Publish complete release
+    needs: attest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: kitmux-release-assets
           path: dist
@@ -146,7 +186,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          cd dist
+          cd dist || exit 1
           sha256sum -c SHA256SUMS
           if draft=$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft); then
             test "$draft" = true || { echo 'Refusing to replace a published release' >&2; exit 1; }

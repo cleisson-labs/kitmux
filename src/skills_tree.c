@@ -120,7 +120,7 @@ static int visit_file(Tree *tree, const char *relative, const char *path,
 }
 
 static int walk(Tree *tree, const char *relative, unsigned depth) {
-    if (depth > 32 || ++tree->count > SKILL_MAX_ENTRIES)
+    if (depth > KM_SKILL_MAX_DEPTH || ++tree->count > SKILL_MAX_ENTRIES)
         return km_error(tree->km, "skill package has too many entries or nested directories");
     char path[PATH_MAX];
     if (km_path(tree->km, path, sizeof(path), "%s%s%s", tree->root,

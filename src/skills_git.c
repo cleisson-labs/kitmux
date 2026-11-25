@@ -20,6 +20,18 @@ static long long milliseconds(void) {
     return (long long)now.tv_sec * 1000 + now.tv_nsec / 1000000;
 }
 
+/* Inherited GIT_* variables can redirect repository, index, object, or config
+ * lookup (for example GIT_DIR inside a hook). Keep only transport settings. */
+static bool inherited_git_variable(const char *entry) {
+    static const char *const transport[] = {"GIT_SSL_CAINFO=", "GIT_SSL_CAPATH=", "GIT_HTTP_LOW_SPEED_LIMIT=",
+                                            "GIT_HTTP_LOW_SPEED_TIME=", "GIT_HTTP_USER_AGENT=", "GIT_PROXY_SSL_CAINFO=",
+                                            "GIT_PROXY_SSL_CERT=", "GIT_PROXY_SSL_KEY=", NULL};
+    if (strncmp(entry, "GIT_", 4)) return false;
+    for (size_t i = 0; transport[i]; ++i)
+        if (!strncmp(entry, transport[i], strlen(transport[i]))) return false;
+    return true;
+}
+
 static int spawn_git(Km *km, char *const arguments[], int output, pid_t *pid) {
     char *argv[40] = {"git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
                       "-c", "protocol.ext.allow=never", "-c", "protocol.file.allow=always"};
@@ -35,7 +47,7 @@ static int spawn_git(Km *km, char *const arguments[], int output, pid_t *pid) {
     if (!environment) return km_error(km, "cannot allocate Git environment");
     size_t next = 0;
     for (size_t i = 0; i < env_count; ++i)
-        if (strncmp(environ[i], "GIT_TERMINAL_PROMPT=", 20)) environment[next++] = environ[i];
+        if (!inherited_git_variable(environ[i])) environment[next++] = environ[i];
     environment[next] = "GIT_TERMINAL_PROMPT=0";
     posix_spawn_file_actions_t actions;
     posix_spawnattr_t attributes;
@@ -189,6 +201,12 @@ static int write_blob(Km *km, const char *repo, const char *root,
     return result;
 }
 
+static size_t path_components(const char *path) {
+    size_t count = 1;
+    for (const char *p = path; *p; ++p) count += *p == '/';
+    return count;
+}
+
 static int extract_entries(Km *km, KmSkill *skill, const char *repo, char *entries, size_t length) {
     size_t used = 0, count = 0, total = 0, prefix = strlen(skill->subdir);
     while (used < length) {
@@ -210,6 +228,9 @@ static int extract_entries(Km *km, KmSkill *skill, const char *repo, char *entri
             relative += prefix + 1;
         }
         if (!safe_subdir(relative)) return km_error(km, "unsafe path in Git skill package");
+        if (path_components(relative) > KM_SKILL_MAX_DEPTH)
+            return km_error(km, "Git skill package exceeds the nesting limit of %u directories at %.200s; "
+                            "flatten the package before running skill add", KM_SKILL_MAX_DEPTH, relative);
         if (write_blob(km, repo, skill->root, relative, oid, !strcmp(mode, "100755"))) return -1;
         char path[PATH_MAX];
         struct stat st;

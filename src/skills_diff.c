@@ -62,7 +62,7 @@ static int compare_directory(Km *km, const char *old_root, const char *new_root,
 
 static int compare_entry(Km *km, const char *old_root, const char *new_root,
                           const char *relative, unsigned depth) {
-    if (depth > 32) return km_error(km, "previous skill package exceeds nesting limit");
+    if (depth > KM_SKILL_MAX_DEPTH) return km_error(km, "previous skill package exceeds nesting limit");
     char old_path[PATH_MAX], new_path[PATH_MAX];
     struct stat before, after;
     if (km_path(km, old_path, sizeof(old_path), "%s/%s", old_root, relative) ||

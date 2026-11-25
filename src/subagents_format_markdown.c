@@ -196,7 +196,8 @@ static int set_disabled(Km *km, char **text, bool disabled) {
     if (open_frontmatter(km,*text,&front)<0) { close_frontmatter(&front); return -1; }
     yaml_node_t *node=field(&front,"disabled");
     bool current=scalar(node) && !strcmp((const char *)node->data.scalar.value,"true");
-    size_t begin=front.close,end=front.close; int result=0;
+    /* Without a disabled key, insert an empty-span field before the closing marker. */
+    size_t begin=front.close,end=begin; int result=0;
     if (node && current!=disabled) result=scalar_span(km,&front,*text,"disabled",node,&begin,&end);
     bool crlf=front.close>=2 && (*text)[front.close-2]=='\r';
     close_frontmatter(&front);

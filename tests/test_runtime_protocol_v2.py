@@ -114,12 +114,6 @@ class ProtocolV2Tests(unittest.TestCase):
         self.bridge()
         self.assertIn("error", self.call())
 
-    def test_unsupported_server_capability_stays_direct_only(self):
-        self.config["mcps"]["stub"]["env"] = {"KM_TEST_CAPS":'{"tools":{},"resources":{}}'}
-        self.save()
-        self.bridge()
-        self.assertIn("error", self.call())
-
     def test_progress_only_for_active_token_and_increases(self):
         self.bridge()
         meta = {"progressToken":7, "ai.opencode/sessionID":"session-preserved"}

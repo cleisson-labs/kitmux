@@ -123,6 +123,21 @@ class QaRuntimeTests(unittest.TestCase):
         endpoint.bind(str(path))
         endpoint.close()
 
+    # 1: extra upstream capabilities
+    def test_extra_upstream_capabilities_are_ignored(self):
+        self.environment(KM_QA_CAPS=json.dumps({"experimental": {}, "logging": {}, "completions": {},
+            "prompts": {"listChanged": False}, "resources": {"subscribe": False, "listChanged": False},
+            "tools": {"listChanged": False}}))
+        self.bridge()
+        self.assertEqual(self.tools()["result"]["tools"][0]["name"], "echo")
+        self.assertIn("result", self.call())
+
+    def test_upstream_without_tools_capability_is_rejected(self):
+        self.environment(KM_QA_CAPS='{"prompts":{}}')
+        self.bridge()
+        response = self.tools()
+        self.assertIn("tools capability", response["error"]["message"])
+
     # 5: parser limits
     def test_deeply_nested_result_is_forwarded(self):
         self.bridge()

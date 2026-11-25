@@ -123,14 +123,10 @@ static bool nonempty_text(json_object *object, const char *key) {
     return text && *text && strlen(text) == (size_t)json_object_get_string_len(value);
 }
 
-static bool tools_capabilities(json_object *caps) {
-    if (!json_object_is_type(caps, json_type_object) || json_object_object_length(caps) != 1) return false;
-    json_object *tools = km_get(caps, "tools");
-    if (!json_object_is_type(tools, json_type_object)) return false;
-    json_object_object_foreach(tools, name, value) {
-        if (strcmp(name, "listChanged") || !json_object_is_type(value, json_type_boolean)) return false;
-    }
-    return true;
+/* Only tools are bridged. Other server capabilities are never advertised to
+ * the client, so their requests and notifications cannot reach the bridge. */
+static bool tools_capability(json_object *caps) {
+    return json_object_is_type(km_get(caps, "tools"), json_type_object);
 }
 
 static json_object *request(const char *method, const char *id) {
@@ -155,13 +151,15 @@ static int handshake(Rt *rt) {
     json_object *result = km_get(answer, "result"), *caps = km_get(result, "capabilities"), *reserved = NULL;
     const char *version = km_string(result, "protocolVersion");
     json_object *info = km_get(result, "serverInfo");
-    bool compatible = !json_object_object_get_ex(answer, "method", &reserved) &&
-                      !json_object_object_get_ex(answer, "error", &reserved) &&
-                      nonempty_text(result, "protocolVersion") && rt_legacy_version(version) &&
-                      tools_capabilities(caps) && nonempty_text(info, "name") && nonempty_text(info, "version");
-    if (compatible) snprintf(rt->upstream_protocol, sizeof(rt->upstream_protocol), "%s", version);
+    bool legacy = !json_object_object_get_ex(answer, "method", &reserved) &&
+                  !json_object_object_get_ex(answer, "error", &reserved) &&
+                  nonempty_text(result, "protocolVersion") && rt_legacy_version(version) &&
+                  nonempty_text(info, "name") && nonempty_text(info, "version");
+    bool tools = tools_capability(caps);
+    if (legacy && tools) snprintf(rt->upstream_protocol, sizeof(rt->upstream_protocol), "%s", version);
     json_object_put(answer);
-    if (!compatible) return km_error(rt->km, "Managed bridge requires a tools-only legacy MCP endpoint; use direct mode");
+    if (!legacy) return km_error(rt->km, "Managed bridge requires a legacy MCP endpoint; use direct mode");
+    if (!tools) return km_error(rt->km, "Managed bridge requires an MCP endpoint with the tools capability; use direct mode");
     packet = request("notifications/initialized", NULL);
     status = rt_send(rt->km, rt->upstream_in, packet);
     json_object_put(packet);

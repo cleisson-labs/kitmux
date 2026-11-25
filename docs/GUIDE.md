@@ -21,7 +21,7 @@ verification.
 Copy this prompt into your local coding agent:
 
 ```text
-Install Kitmux from https://github.com/cleissonom/kitmux/releases and import my
+Install Kitmux from https://github.com/cleisson-labs/kitmux/releases and import my
 existing setup. Read the README for the selected stable release. Resolve one
 release tag, select the executable for this machine, verify its SHA256 checksum,
 and install it at ~/.local/bin/kitmux using the documented atomic upgrade and
@@ -595,11 +595,15 @@ follow Conventional Commits, and Dependabot proposes pinned action updates weekl
 Every action is pinned to a commit SHA, and each job receives only the token
 permissions it needs.
 
-Tagged releases carry SLSA build provenance for every archive and `SHA256SUMS`.
-Verify a download before installing it (GitHub CLI 2.49 or later):
+Releases built by the attestation-enabled workflow carry SLSA build provenance for
+every archive and `SHA256SUMS`. Verify a download before installing it (GitHub CLI
+2.49 or later):
 
 ```sh
-gh attestation verify kitmux-vX.Y.Z-OS-ARCH.tar.gz --repo cleissonom/kitmux \
-  --signer-workflow cleissonom/kitmux/.github/workflows/release.yml \
+gh attestation verify kitmux-vX.Y.Z-OS-ARCH.tar.gz --repo cleisson-labs/kitmux \
+  --signer-workflow cleisson-labs/kitmux/.github/workflows/release.yml \
   --source-ref refs/tags/vX.Y.Z
 ```
+
+Published v0.5.0 and v0.6.0 assets predate the attestation-enabled workflow.
+Use their `SHA256SUMS` for checksum verification.

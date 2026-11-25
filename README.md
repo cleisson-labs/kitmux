@@ -11,8 +11,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/cleissonom/kitmux/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/cleissonom/kitmux/ci.yml?branch=main&amp;label=ci&amp;labelColor=111111"></a>
-  <a href="https://github.com/cleissonom/kitmux/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/cleissonom/kitmux?label=release&amp;labelColor=111111&amp;color=ff0000"></a>
+  <a href="https://github.com/cleisson-labs/kitmux/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/cleisson-labs/kitmux/ci.yml?branch=main&amp;label=ci&amp;labelColor=111111"></a>
+  <a href="https://github.com/cleisson-labs/kitmux/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/cleisson-labs/kitmux?label=release&amp;labelColor=111111&amp;color=ff0000"></a>
   <img alt="Written in C17" src="https://img.shields.io/badge/C17-portable-5f5f5f?labelColor=111111">
   <img alt="macOS and Linux, arm64 and x86_64" src="https://img.shields.io/badge/macOS%20%7C%20Linux-arm64%20%7C%20x86__64-5f5f5f?labelColor=111111">
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-5f5f5f?labelColor=111111"></a>
@@ -116,7 +116,7 @@ start a new session after changes so it reads its updated configuration.
 ## Download and install
 
 Prebuilt executables for macOS 15+ and Linux with glibc 2.35+ (arm64 and x86_64)
-are on [Releases](https://github.com/cleissonom/kitmux/releases). They need no
+are on [Releases](https://github.com/cleisson-labs/kitmux/releases). They need no
 compiler or Homebrew libraries; Linux needs terminfo data (`ncurses-base`), and Git
 is used only for repository skills. This block verifies the SHA256 checksum, installs
 one pinned release to `~/.local/bin` (or `KITMUX_INSTALL_DIR`), and keeps a regular
@@ -138,7 +138,7 @@ previous binary as `kitmux.previous`:
     *) echo "Unsupported architecture" >&2; exit 1 ;;
   esac
   kitmux_name="kitmux-${kitmux_version}-${kitmux_os}-${kitmux_arch}"
-  kitmux_url="https://github.com/cleissonom/kitmux/releases/download/${kitmux_version}"
+  kitmux_url="https://github.com/cleisson-labs/kitmux/releases/download/${kitmux_version}"
   kitmux_tmp=$(mktemp -d)
   kitmux_new= kitmux_backup=
   trap 'rm -rf "$kitmux_tmp"; [ -z "$kitmux_new" ] || rm -f "$kitmux_new"; [ -z "$kitmux_backup" ] || rm -f "$kitmux_backup"' EXIT

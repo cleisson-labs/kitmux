@@ -9,11 +9,11 @@ on:
 # (releases published after this workflow change). Verify downloads with
 # GitHub CLI 2.49+, replacing vX.Y.Z and the target:
 #   gh attestation verify kitmux-vX.Y.Z-linux-x86_64.tar.gz \
-#     --repo cleissonom/kitmux \
-#     --signer-workflow cleissonom/kitmux/.github/workflows/release.yml \
+#     --repo cleisson-labs/kitmux \
+#     --signer-workflow cleisson-labs/kitmux/.github/workflows/release.yml \
 #     --source-ref refs/tags/vX.Y.Z
-#   gh attestation verify SHA256SUMS --repo cleissonom/kitmux \
-#     --signer-workflow cleissonom/kitmux/.github/workflows/release.yml \
+#   gh attestation verify SHA256SUMS --repo cleisson-labs/kitmux \
+#     --signer-workflow cleisson-labs/kitmux/.github/workflows/release.yml \
 #     --source-ref refs/tags/vX.Y.Z
 
 permissions: {}

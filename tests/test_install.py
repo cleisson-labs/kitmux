@@ -94,7 +94,7 @@ shutil.copyfile(source, args[args.index("-o") + 1])
                 self.assertTrue(os.access(installed, os.X_OK))
         urls = (self.root / "urls").read_text().splitlines()
         self.assertEqual(len(urls), 8)
-        self.assertTrue(all(url.startswith("https://github.com/cleissonom/kitmux/releases/download/v0.7.0/")
+        self.assertTrue(all(url.startswith("https://github.com/cleisson-labs/kitmux/releases/download/v0.7.0/")
                             for url in urls))
 
     def test_upgrade_preserves_previous_executable_for_rollback(self):

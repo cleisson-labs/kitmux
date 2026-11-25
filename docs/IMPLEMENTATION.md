@@ -36,6 +36,12 @@ refresh, and native updates preserve authored text or an explicit empty value.
 Existing show/JSON contracts remain unchanged. A native description is adopted
 only when local documentation is absent.
 
+## Organization migration
+
+Repository links, badges, the staged installer download URL, and provenance
+verification examples now use `cleisson-labs/kitmux`. Published v0.5.0 and v0.6.0
+assets predate the attestation-enabled workflow and provide `SHA256SUMS`.
+
 ## Implementation boundaries
 
 - `catalog.c`, `policy.c`, and `groups*.c` own catalog validation, persistence,
@@ -233,7 +239,7 @@ Hosted qualification on 12 November 2026 at revision `36098f7`:
 | Ubuntu 22.04 x86_64 | Passed | Passed, including full-suite leak detection |
 
 Each full suite discovered 280 cases: 274 passed and 6 opt-in native cases were
-skipped. The [four-target CI run](https://github.com/cleissonom/kitmux/actions/runs/43237072560)
+skipped. The [four-target CI run](https://github.com/cleisson-labs/kitmux/actions/runs/43237072560)
 completed successfully. The ARM64 Linux sanitizer profile and native-client
 qualification limits above apply to these results.
 
@@ -242,7 +248,7 @@ packaged executables, combines four archives with `SHA256SUMS`, and publishes
 only when every required job passes.
 
 All four native build jobs in the
-[manual release qualification](https://github.com/cleissonom/kitmux/actions/runs/43237129299)
+[manual release qualification](https://github.com/cleisson-labs/kitmux/actions/runs/43237129299)
 also passed ordinary/sanitizer suites, standalone archive validation, and packaged
 runtime smoke tests. Both macOS architectures passed the complete smoke harness
 with Homebrew reads denied. Both Linux architectures passed it in Ubuntu 22.04

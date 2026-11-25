@@ -23,11 +23,11 @@ static int options(Km *km, int argc, char **argv, const char **path, const char 
         if (metadata < 0) return -1;
         if (metadata) { i++; continue; }
         const char **field = !strcmp(argv[i], "--from") ? path : !strcmp(argv[i], "--format") ? client : NULL;
-        if (!field || *field || i + 1 >= argc) return km_error(km, "Use --from FILE --format codex|claude|opencode");
+        if (!field || *field || i + 1 >= argc) return km_error(km, "Use --from FILE --format codex|claude|opencode|antigravity");
         *field = argv[++i];
     }
     return *path && *client && km_valid_agent(*client) ? 0 :
-        km_error(km, "Native MCP source requires --from FILE --format codex|claude|opencode");
+        km_error(km, "Native MCP source requires --from FILE --format codex|claude|opencode|antigravity");
 }
 
 static json_object *source(Km *km, const char *path, const char *client) {
@@ -38,6 +38,7 @@ static json_object *source(Km *km, const char *path, const char *client) {
     json_object *native = ad_parse(km, text); free(text);
     if (!native) return NULL;
     const char *url = km_string(native, "url");
+    if (!url && !strcmp(client, "antigravity")) url = km_string(native, "serverUrl");
     json_object *command = km_get(native, "command");
     bool valid = ad_server_shape(km, client, native) == 0 && (!!url != !!command);
     if (valid && url) valid = !strncmp(url, "https://", 8) || !strncmp(url, "http://", 7);

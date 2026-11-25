@@ -9,6 +9,8 @@ typedef struct AdFile {
     char *text;
     bool existed;
     bool toml;
+    bool remove; /* delete the file instead of writing text */
+    bool blank;  /* existed but held only whitespace; edited as {} */
     struct AdFile *next;
 } AdFile;
 
@@ -41,6 +43,7 @@ void ad_note(AdRun *run, const char *format, ...) __attribute__((format(printf, 
 void ad_flush(AdRun *run);
 void ad_drop_files(AdRun *run, const char *agent);
 void ad_mcp_key(char *key, size_t size, const char *agent, const char *id);
+void ad_drop_empty(json_object *native);
 AdFile *ad_file(AdRun *run, const char *agent, const char *relative, bool toml);
 int ad_change(AdRun *run, AdFile *file, const char *key, const char *desired, bool adopt);
 int ad_finish(AdRun *run);
@@ -59,6 +62,7 @@ int ad_sync_subagents(AdRun *run, const char *agent);
 int ad_restore_subagents(AdRun *run, const char *agent);
 int ad_subagent_origins_valid(Km *km, json_object *resource, const char *id);
 bool ad_subagent_path_valid(Km *km, const char *path, const char *agent, const char *id);
+int ad_subagent_folder_path(Km *km, char *path, const char *id);
 int ad_subagent_parent_safe(Km *km, const char *path);
 int ad_subagent_flat_discovery(Km *km, const char *agent);
 int ad_subagent_change(AdRun *run, const char *agent, const char *path,

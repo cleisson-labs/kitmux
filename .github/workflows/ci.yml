@@ -5,27 +5,108 @@ on:
   pull_request:
   workflow_dispatch:
 
-permissions:
-  contents: read
+permissions: {}
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Superseded branch and pull request runs are cancelled; main keeps every run.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  changes:
+    name: Detect code changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - name: Check out pull request merge commit
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Classify changed paths
+        id: filter
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          # Only pull requests may skip code jobs; pushes and manual runs always test.
+          code=true
+          if [ "$EVENT_NAME" = pull_request ]; then
+            git diff --name-only HEAD^1 HEAD > "$RUNNER_TEMP/changed-paths"
+            if [ -s "$RUNNER_TEMP/changed-paths" ]; then
+              code=false
+              while IFS= read -r path; do
+                case $path in
+                  # Tests execute the README installer block and package THIRD_PARTY.md.
+                  README.md|THIRD_PARTY.md) code=true ;;
+                  docs/*|*.md) ;;
+                  *) code=true ;;
+                esac
+              done < "$RUNNER_TEMP/changed-paths"
+            fi
+          fi
+          echo "Code jobs required: $code"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+
+  workflow-lint:
+    name: Workflow lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: actionlint
+        uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 # 1.7.12
+        with:
+          args: -color
+      - name: zizmor
+        uses: zizmorcore/zizmor-action@1b4550e929643b8b26a62303c6bd64814271a4f1 # v0.9.2
+        with:
+          version: 1.33.1
+          advanced-security: false
+          annotations: true
+
+  static-analysis:
+    name: Static analysis (cppcheck)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install cppcheck
+        run: sudo apt-get update && sudo apt-get install -y cppcheck
+      - name: cppcheck
+        run: make analyze
+
   test:
     name: Build and tests (${{ matrix.runner }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     strategy:
       fail-fast: false
       matrix:
         runner: [macos-15, macos-15-intel, ubuntu-22.04, ubuntu-22.04-arm]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.13'
       - name: Install macOS build dependencies
@@ -43,3 +124,22 @@ jobs:
       - name: ARM64 Linux leak checks
         if: runner.os == 'Linux' && runner.arch == 'ARM64'
         run: sh scripts/check-leaks.sh "$PWD/build-sanitize/kitmux"
+
+  # Branch protection requires only this job. Skipped jobs (docs-only pull
+  # requests) pass; any failed or cancelled job fails the gate.
+  ci-ok:
+    name: ci-ok
+    if: always()
+    needs: [changes, workflow-lint, static-analysis, test]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Check required job results
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "Required job results: $RESULTS"
+          case " $RESULTS " in
+            *" failure "*|*" cancelled "*) echo 'A required job failed or was cancelled' >&2; exit 1 ;;
+          esac

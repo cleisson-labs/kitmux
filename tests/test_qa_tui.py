@@ -98,7 +98,8 @@ class QaTerminalTests(TerminalTestCase):
         terminal.wait_text("Native sync pending")
         terminal.send(b"4")
         terminal.wait_text("Native sync pending: sync failed for claude")
-        self.assertIn(b"claude: adopted", terminal.output)
+        # The client name and its state are styled separately, so match each part.
+        self.assertRegex(terminal.output, rb"claude(\x1b\[[0-9;]*m|\x1b\(B)*:(\x1b\[[0-9;]*m|\x1b\(B)* adopted")
         self.quit(terminal)
 
     def test_bulk_toggle_includes_marked_rows_hidden_in_collapsed_group(self):

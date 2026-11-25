@@ -9,7 +9,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-const char *const km_agents[KM_AGENT_COUNT] = {"codex", "claude", "opencode"};
+const char *const km_agents[KM_AGENT_COUNT] = {"codex", "claude", "opencode", "antigravity"};
 
 bool km_valid_agent(const char *agent) {
     if (!agent) return false;

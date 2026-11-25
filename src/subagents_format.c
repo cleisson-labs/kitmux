@@ -5,7 +5,7 @@
 
 static const char *client_for(const char *format) {
     if (!format) return NULL;
-    if (!strcmp(format,"codex") || !strcmp(format,"claude") || !strcmp(format,"opencode")) return format;
+    if (!strcmp(format,"codex") || !strcmp(format,"claude") || !strcmp(format,"opencode") || !strcmp(format,"antigravity")) return format;
     return !strcmp(format,"opencode-json") ? "opencode" : NULL;
 }
 
@@ -63,7 +63,7 @@ static json_object *snapshot(json_object *doc, const char *text, const char *for
 json_object *km_subagent_parse(Km *km, const char *text, const char *format, const char *id) {
     const char *client=client_for(format);
     if (!client || !km_valid_id(id) || !text || strlen(text)>KM_MAX_FILE) {
-        km_error(km,"expected subagent format codex, claude, opencode or opencode-json and a valid ID"); return NULL;
+        km_error(km,"expected subagent format codex, claude, opencode, opencode-json or antigravity and a valid ID"); return NULL;
     }
     json_object *doc=parse_document(km,text,format);
     if (!doc) return NULL;
@@ -161,7 +161,7 @@ static char *portable_text(Km *km, json_object *resource, const char *id, const 
     char *text=description && (!codex || instructions) ? malloc(length) : NULL;
     if (text && codex)
         snprintf(text,length,"name = \"%s\"\ndescription = %s\ndeveloper_instructions = %s\n",id,description,instructions);
-    else if (text && !strcmp(client,"claude"))
+    else if (text && (!strcmp(client,"claude") || !strcmp(client,"antigravity")))
         snprintf(text,length,"---\nname: \"%s\"\ndescription: %s\n---\n%s",id,description,body);
     else if (text) snprintf(text,length,"---\ndescription: %s\nmode: subagent\n---\n%s",description,body);
     free(description); free(instructions);

@@ -57,7 +57,9 @@ AdFile *ad_file(AdRun *run, const char *agent, const char *relative, bool toml) 
         if (!file->original) { free(file); return NULL; }
     } else if (errno==ENOENT) file->original=strdup(toml ? "" : "{}\n");
     else { km_error(run->km,"cannot inspect native configuration for %s",agent); free(file); return NULL; }
-    file->text=strdup(file->original);
+    /* agy creates an empty mcp_config.json on first start and reads it as no servers. */
+    file->blank=!toml && !strcmp(agent,"antigravity") && !file->original[strspn(file->original," \t\r\n")];
+    file->text=strdup(file->blank ? "{}\n" : file->original);
     if (!file->text) { free(file->original); free(file); km_error(run->km,"out of memory"); return NULL; }
     if (!toml) {
         json_object *doc=ad_parse(run->km,file->text);
@@ -82,17 +84,30 @@ char *ad_entry_raw(Km *km, const AdFile *file, const char *key) {
 }
 
 static bool mcp_entry(const AdFile *file, const char *key) {
+    if (!strcmp(file->agent,"antigravity")) return !strncmp(key,"mcpServers/",11);
     return file->toml || !strncmp(key,"mcp/servers/",12);
 }
 
-/* Clients drop explicit defaults (Codex enabled = true, OpenCode
- * disabled: false) when they rewrite configuration; that is not drift. */
+/* agy omits empty args, env and headers when it rewrites mcp_config.json. */
+void ad_drop_empty(json_object *doc) {
+    const char *keys[]={"args","env","headers"};
+    for (size_t i=0;i<sizeof(keys)/sizeof(*keys);i++) {
+        json_object *value=km_get(doc,keys[i]);
+        if ((json_object_is_type(value,json_type_array) && !json_object_array_length(value)) ||
+            (json_object_is_type(value,json_type_object) && !json_object_object_length(value)))
+            json_object_object_del(doc,keys[i]);
+    }
+}
+
+/* Clients drop explicit defaults (Codex enabled = true, OpenCode and
+ * Antigravity disabled: false) when they rewrite configuration; that is not drift. */
 static json_object *without_default(Km *km, const AdFile *file, const char *raw) {
     json_object *doc=file->toml ? ad_toml_parse(km,raw) : ad_parse(km,raw);
     const char *field=file->toml ? "enabled" : "disabled";
     json_object *value=km_get(doc,field);
     if (json_object_is_type(value,json_type_boolean) && json_object_get_boolean(value)==file->toml)
         json_object_object_del(doc,field);
+    if (doc && !strcmp(file->agent,"antigravity")) ad_drop_empty(doc);
     return doc;
 }
 
@@ -244,10 +259,20 @@ static int apply_link(AdRun *run, json_object *link) {
 }
 
 /* One unwritable file must not stop the other clients' native writes. */
+static bool file_changed(const AdFile *file) {
+    if (file->remove) return file->existed;
+    return strcmp(file->blank ? "{}\n" : file->original,file->text)!=0;
+}
+
+static int remove_file(AdRun *run, AdFile *file) {
+    if (unlink(file->path)<0 && errno!=ENOENT) return km_error(run->km,"Cannot remove %s: %s",file->path,strerror(errno));
+    return 0;
+}
+
 static void write_native(AdRun *run, char *failed, size_t size) {
     for (AdFile *f=run->files;f;f=f->next) {
-        if (!strcmp(f->original,f->text)) continue;
-        if (check_file(run,f)<0 || km_write_file(run->km,f->path,f->text,strlen(f->text),0600)<0) {
+        if (!file_changed(f)) continue;
+        if (check_file(run,f)<0 || (f->remove ? remove_file(run,f) : km_write_file(run->km,f->path,f->text,strlen(f->text),0600))<0) {
             size_t used=strlen(failed);
             snprintf(failed+used,size-used,"%s%.300s",used ? "; " : "",run->km->error);
             run->km->error[0]=0; continue;
@@ -259,7 +284,7 @@ static void write_native(AdRun *run, char *failed, size_t size) {
 static bool planned_changes(AdRun *run) {
     if (json_object_get_boolean(km_get(run->state,"pending")) || json_object_array_length(run->links)) return true;
     for (AdFile *file=run->files;file;file=file->next)
-        if (strcmp(file->original,file->text)) return true;
+        if (file_changed(file)) return true;
     for (size_t i=0;i<json_object_array_length(run->subagent_actions);i++) {
         json_object *action=json_object_array_get_idx(run->subagent_actions,i);
         const char *before=km_string(action,"before"), *after=km_string(action,"after");
@@ -284,7 +309,7 @@ int ad_finish(AdRun *run) {
     }
     if (!run->apply) {
         for (AdFile *f=run->files;f;f=f->next)
-            if (strcmp(f->original,f->text)) printf("preview: %s configuration update\n",f->agent);
+            if (file_changed(f)) printf("preview: %s configuration update\n",f->agent);
         printf("preview: %zu skill projection actions; run with --apply\n",json_object_array_length(run->links));
         ad_subagent_preview(run);
         return 0;

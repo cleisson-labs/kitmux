@@ -1,9 +1,10 @@
 # Architecture and verification
 
-Kitmux 0.6.0 is a C17 terminal application for MCP servers, Agent Skills, custom
-subagents, groups, and assignments to Codex, Claude Code, and OpenCode. See the
-[README](../README.md) for setup and commands and [v0.6 notes](V0.6.md) for the
-current release. Earlier behavior is documented in [v0.5 notes](V0.5.md), [v0.4 notes](V0.4.md), [v0.3 notes](V0.3.md),
+Kitmux 0.7.0 is a C17 terminal application for MCP servers, Agent Skills, custom
+subagents, groups, and assignments to Codex, Claude Code, OpenCode, and the
+Antigravity CLI. See the [README](../README.md) for setup, the [guide](GUIDE.md) for
+usage, and [v0.7 notes](V0.7.md) for the current release. Earlier behavior is
+documented in [v0.6 notes](V0.6.md), [v0.5 notes](V0.5.md), [v0.4 notes](V0.4.md), [v0.3 notes](V0.3.md),
 [v0.2 notes](V0.2.md), and the
 [import compatibility record](IMPORT_FIX.md).
 
@@ -57,6 +58,8 @@ only when local documentation is absent.
 - `tui*.c` provide grouped resource trees in the ncurses interface; `main.c`
   routes equivalent CLI commands. Row identity distinguishes headers from
   resources, while resource identity deduplicates actions across memberships.
+  `tui_theme.c` owns the red/grey palette, glyphs, and client labels; `tui_list.c`
+  derives list columns from `km_agents`, so a new client needs no drawing changes.
   `tui_sync.c` reloads the catalog after external saves, checks pending native
   sync for the banner, and builds the Clients tab.
 - `tui_details.c` selects allowlisted resource content; `tui_document.c` owns the
@@ -89,6 +92,24 @@ rules Kitmux added). Whole-array permission records written by v0.5.0 migrate on
 the first sync, and restore accepts both forms. Older Kitmux
 builds reject schema v3; keep v0.4 for recovery. Native project and organization
 settings keep their own precedence.
+
+## V0.7 Antigravity, interface, and CI
+
+- Antigravity is the fourth client (`antigravity`). Its MCP file is
+  `~/.gemini/config/mcp_config.json`; `adapters_skill_excludes.c` owns the names
+  Kitmux adds to `~/.gemini/config/skills.json` `exclude` for skills visible through
+  the shared `~/.agents/skills`; subagents use an `antigravity` Markdown format in
+  `~/.gemini/config/agents`. Behavior was verified against `agy` 1.5.17 under
+  `sandbox-exec` with offline commands only, including the blank file `agy` creates
+  on first start and its own sorted rewrites of `mcp_config.json`.
+- The TUI uses only red, grey, and the terminal's own foreground/background;
+  `tests/test_tui_theme.py` asserts the emitted colors, the `NO_COLOR` fallback, and
+  ASCII cells outside UTF-8 locales. Documents open with a client summary line.
+- CI gained a `ci-ok` gate, actionlint/zizmor, cppcheck (`make analyze`), CodeQL,
+  a PR title check, Dependabot, SHA-pinned actions, and release provenance
+  attestations. Detailed usage moved from the README into [GUIDE.md](GUIDE.md).
+- Compatibility: no catalog schema bump. v0.6 refuses a catalog with `antigravity`
+  keys without writing anything; rollback steps are in the v0.7 notes.
 
 ## V0.6 QA review fixes
 

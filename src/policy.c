@@ -53,7 +53,7 @@ int km_resource_toggle(Km *km, const char *kind, int argc, char **argv) {
     const char *verb = argv[0];
     if (strcmp(verb, "enable") && strcmp(verb, "disable") && strcmp(verb, "inherit")) return km_error(km, "Invalid toggle");
     if (argc == 4) {
-        if (strcmp(argv[2], "--agent") || !km_valid_agent(argv[3])) return km_error(km, "Expected --agent codex|claude|opencode");
+        if (strcmp(argv[2], "--agent") || !km_valid_agent(argv[3])) return km_error(km, "Expected --agent codex|claude|opencode|antigravity");
         json_object *agents = km_get(resource, "agents");
         if (!agents) { agents = json_object_new_object(); json_object_object_add(resource, "agents", agents); }
         json_object_object_add(agents, argv[3], json_object_new_string(!strcmp(verb, "enable") ? "on" : !strcmp(verb, "disable") ? "off" : "inherit"));

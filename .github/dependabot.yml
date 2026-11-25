@@ -1,0 +1,15 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    # Let new action releases age before adoption (zizmor dependabot-cooldown).
+    cooldown:
+      default-days: 7
+    groups:
+      github-actions:
+        patterns: ['*']
+    # Produces "ci: ..." titles that satisfy the PR title check.
+    commit-message:
+      prefix: ci

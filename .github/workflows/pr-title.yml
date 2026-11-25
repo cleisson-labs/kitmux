@@ -1,0 +1,31 @@
+name: PR title
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  title:
+    name: Conventional Commit title
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Check pull request title
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          pattern='^(feat|fix|docs|ci|test|chore|refactor|perf|build)(\([A-Za-z0-9._/-]+\))?!?: [^[:space:]]'
+          if [[ $PR_TITLE =~ $pattern ]]; then
+            echo "Title follows Conventional Commits: $PR_TITLE"
+            exit 0
+          fi
+          echo "::error title=PR title::Use '<type>[(scope)][!]: <summary>' with type feat, fix, docs, ci, test, chore, refactor, perf, or build."
+          echo "Received: $PR_TITLE" >&2
+          exit 1

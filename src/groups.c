@@ -45,7 +45,7 @@ static int group_assign(Km *km, json_object *group, const char *csv) {
     if (!copy) { json_object_put(agents); return km_error(km, "Out of memory"); }
     bool selected[KM_AGENT_COUNT] = {false};
     for (char *s = strtok_r(copy, ",", &save); s; s = strtok_r(NULL, ",", &save)) {
-        if (!km_valid_agent(s)) { free(copy); json_object_put(agents); return km_error(km, "Unknown agent; use codex,claude,opencode"); }
+        if (!km_valid_agent(s)) { free(copy); json_object_put(agents); return km_error(km, "Unknown agent; use codex,claude,opencode,antigravity"); }
         for (size_t i = 0; i < KM_AGENT_COUNT; ++i) if (!strcmp(s, km_agents[i])) selected[i] = true;
     }
     free(copy);

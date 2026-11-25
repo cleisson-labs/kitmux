@@ -9,6 +9,7 @@ replacement implementations of their MCP clients.
 | Codex | `codex-cli 0.167.1` | Stdio app-server, one ephemeral thread, native MCP status and tool-call APIs |
 | Claude Code | `2.1.322` | One persistent `--bare --print` process with stream JSON input/output and an explicit strict MCP configuration |
 | OpenCode | `v2.1.4` | Private loopback HTTP server, one `build` session, native Code Mode tool execution |
+| Antigravity CLI | `agy 1.5.17` (25 November 2026, Kitmux 0.7.0) | Offline commands only under `sandbox-exec` with a temporary HOME: `agy mcp add/list/enable/disable/remove` and `agy agents` read Kitmux-written MCP entries and subagents; no model turns or authentication |
 
 ## Reproduce
 

@@ -13,4 +13,4 @@ Reports and fixes are handled on a best-effort basis for the latest release.
 Kitmux manages native configuration and can launch registered MCP commands.
 Only register definitions and install skill packages you trust. Group assignment
 controls availability; native clients continue to enforce permissions and own
-their sessions. See the [configuration scope and recovery guidance](README.md#configuration-safety-and-scope).
+their sessions. See the [configuration scope and recovery guidance](docs/GUIDE.md#configuration-safety-and-scope).

@@ -136,12 +136,15 @@ static int server_save(Km *km, int argc, char **argv, bool edit) {
 }
 
 static int server_list(Km *km) {
-    puts("MCP                    TRANSPORT  MODE       CODEX  CLAUDE  OPENCODE");
+    printf("%-22s %-10s %-10s", "MCP", "TRANSPORT", "MODE");
+    for (size_t i = 0; i < KM_AGENT_COUNT; ++i) printf(" %s", km_agents[i]);
+    putchar('\n');
     json_object *servers = km_resources(km, "mcp");
     json_object_object_foreach(servers, id, server) {
         const char *transport = km_string(server, "transport"), *mode = km_string(server, "mode");
         printf("%-22s %-10s %-10s", id, transport ? transport : "unknown", mode ? mode : "direct");
-        for (size_t i = 0; i < KM_AGENT_COUNT; ++i) printf(" %-7s", km_effective(km, "mcp", id, km_agents[i], NULL, 0) ? "on" : "off");
+        for (size_t i = 0; i < KM_AGENT_COUNT; ++i)
+            printf(" %-*s", (int)strlen(km_agents[i]), km_effective(km, "mcp", id, km_agents[i], NULL, 0) ? "on" : "off");
         putchar('\n');
     }
     return 0;
@@ -156,7 +159,7 @@ static int server_status(Km *km, int argc, char **argv) {
         else if (!strcmp(argv[i], "--json") && !json) json = true;
         else return km_error(km, "Usage: mcp status ID --agent AGENT [--json]");
     }
-    if (!agent || !km_valid_agent(agent)) return km_error(km, "MCP status requires --agent codex|claude|opencode");
+    if (!agent || !km_valid_agent(agent)) return km_error(km, "MCP status requires --agent codex|claude|opencode|antigravity");
     return km_mcp_status(km, argv[1], agent, json);
 }
 

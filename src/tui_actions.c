@@ -8,16 +8,21 @@
 #include <unistd.h>
 
 void ui_notice(KmUi *ui, const char *format, ...) {
+    ui->notice_error = false;
     va_list arguments;
     va_start(arguments, format);
     vsnprintf(ui->notice, sizeof(ui->notice), format, arguments);
     va_end(arguments);
 }
 
-static void dialog_title(const char *title) {
-    erase(); attron(A_BOLD); mvprintw(2, 3, "%s", title); attroff(A_BOLD);
-    mvhline(3, 3, ACS_HLINE, COLS > 6 ? COLS - 6 : 1);
+void ui_dialog_title(const char *title) {
+    erase();
+    ui_put(1, 3, UI_STYLE_ACCENT, "kitmux", 6);
+    ui_put(2, 3, UI_STYLE_STRONG, title, COLS - 6);
+    ui_rule(3, 3, COLS > 6 ? COLS - 6 : 1);
 }
+
+static void hint(int y, const char *const *pairs, int count) { ui_hints(y, 3, pairs, count); }
 
 bool ui_modal_ready(void) {
     while (COLS < 74 || LINES < 20) {
@@ -33,9 +38,10 @@ bool ui_input(KmUi *ui, const char *title, const char *label, char *value, size_
     curs_set(1);
     while (!km_ui_interrupted) {
         if (!ui_modal_ready()) { curs_set(0); return false; }
-        dialog_title(title); mvprintw(5, 3, "%.120s", label);
-        mvaddnstr(7, 3, value, COLS > 8 ? COLS - 8 : 1);
-        mvprintw(10, 3, "Enter confirms. Esc cancels."); refresh();
+        static const char *const keys[] = {"enter", "confirm", "esc", "cancel"};
+        ui_dialog_title(title); ui_put(5, 3, UI_STYLE_MUTED, label, COLS - 6);
+        ui_put(7, 3, UI_STYLE_STRONG, value, COLS > 8 ? COLS - 8 : 1);
+        hint(10, keys, 2); move(7, 3 + (int)(length < (size_t)(COLS - 8) ? length : (size_t)(COLS - 8))); refresh();
         int key = getch();
         if (key == 27) { curs_set(0); return false; }
         if (key == '\n' || key == KEY_ENTER) { curs_set(0); return true; }
@@ -47,8 +53,9 @@ bool ui_input(KmUi *ui, const char *title, const char *label, char *value, size_
 
 bool ui_confirm(KmUi *ui, const char *message) {
     if (!ui_modal_ready()) return false;
-    dialog_title("Confirm change"); mvaddnstr(5, 3, message, COLS - 6);
-    mvaddstr(8, 3, "y: confirm   any other key: cancel"); refresh();
+    static const char *const keys[] = {"y", "confirm", "any other key", "cancel"};
+    ui_dialog_title("Confirm change"); ui_put(5, 3, UI_STYLE_TEXT, message, COLS - 6);
+    hint(8, keys, 2); refresh();
     int key;
     do { key = getch(); } while ((key == ERR || key == KEY_RESIZE) && !km_ui_interrupted);
     (void)ui; return key == 'y' || key == 'Y';
@@ -58,13 +65,14 @@ int ui_choice(const char *title, const char *const *choices, int count, int init
     int row = initial >= 0 && initial < count ? initial : 0;
     while (!km_ui_interrupted) {
         if (!ui_modal_ready()) return -1;
-        dialog_title(title);
+        ui_dialog_title(title);
+        static const char *const keys[] = {"j/k", "move", "enter", "choose", "esc", "cancel"};
         for (int i = 0; i < count; i++) {
-            if (i == row) attron(A_BOLD | A_REVERSE);
-            mvprintw(6 + i * 2, 3, "%c %.*s", i == row ? '>' : ' ', COLS - 8, choices[i]);
-            if (i == row) attroff(A_BOLD | A_REVERSE);
+            char line[256]; snprintf(line, sizeof(line), " %s %s", i == row ? ui_glyph(UI_GLYPH_CURSOR) : " ", choices[i]);
+            if (i == row) { attron(ui_style(UI_STYLE_SELECT)); mvhline(6 + i * 2, 2, ' ', COLS - 4); attroff(ui_style(UI_STYLE_SELECT)); }
+            ui_put(6 + i * 2, 2, i == row ? UI_STYLE_SELECT : UI_STYLE_TEXT, line, COLS - 4);
         }
-        mvaddstr(7 + count * 2, 3, "j/k or arrows   Enter choose   Esc cancel"); refresh();
+        hint(7 + count * 2, keys, 3); refresh();
         int key = getch();
         if (key == 27) return -1;
         if (key == '\n' || key == KEY_ENTER) return row;
@@ -107,7 +115,7 @@ static void command_notice(KmUi *ui, int result) {
     for (const char *c = ui->output; *c; c++) if (*c == '\n' && c[1]) lines++;
     char line[256];
     snprintf(line, sizeof(line), "%.*s", (int)(first < sizeof(line) - 1 ? first : sizeof(line) - 1), ui->output);
-    if (result) ui_notice(ui, "%.480s", *ui->km->error ? ui->km->error : *line ? line : "Action failed; run the CLI for details.");
+    if (result) { ui_notice(ui, "%.480s", *ui->km->error ? ui->km->error : *line ? line : "Action failed; run the CLI for details."); ui->notice_error = true; }
     else if (!*line) ui_notice(ui, "Saved.");
     else if (lines) ui_notice(ui, "%s (+%zu more lines)", line, lines);
     else ui_notice(ui, "%s", line);
@@ -151,10 +159,11 @@ static bool review_output(KmUi *ui, const char *title) {
     int offset = 0;
     while (!km_ui_interrupted) {
         if (!ui_modal_ready()) return false;
-        dialog_title(title);
+        ui_dialog_title(title);
         const char *line = ui_text_lines(ui->output, 5, LINES - 9, offset);
-        const char *hint = "j/k scroll   Enter apply   Esc cancel";
-        mvaddnstr(LINES - 2, 3, ui->truncated ? "Output truncated. Inspect full output with the CLI. Esc returns." : hint, COLS - 6);
+        static const char *const keys[] = {"j/k", "scroll", "enter", "apply", "esc", "cancel"};
+        if (ui->truncated) ui_put(LINES - 2, 3, UI_STYLE_WARN, "Output truncated. Inspect full output with the CLI. Esc returns.", COLS - 6);
+        else hint(LINES - 2, keys, 3);
         refresh(); int key = getch();
         if (key == 27 || key == 'q') return false;
         if ((key == '\n' || key == KEY_ENTER) && !ui->truncated) return true;
@@ -220,15 +229,19 @@ static bool assign_dialog(KmUi *ui, const char *id, bool group, bool globally_of
     int row = 0;
     while (!km_ui_interrupted) {
         if (!ui_modal_ready()) return false;
-        dialog_title("Assign agents"); mvprintw(5, 3, "%s", id);
-        mvaddstr(6, 3, group ? "Only this resource type; individual OFF overrides still win." :
-                 "Changed rows become explicit overrides; unchanged rows keep inheriting.");
+        static const char *const keys[] = {"j/k", "move", "space", "toggle", "enter", "save", "esc", "cancel"};
+        ui_dialog_title("Assign agents"); ui_put(5, 3, UI_STYLE_STRONG, id, COLS - 6);
+        ui_put(6, 3, UI_STYLE_MUTED, group ? "Only this resource type; individual OFF overrides still win." :
+               "Changed rows become explicit overrides; unchanged rows keep inheriting.", COLS - 6);
         for (int a = 0; a < KM_AGENT_COUNT; a++) {
             bool compatible = group || ui->tab != UI_SUBAGENTS || km_subagent_compatible(ui_item(ui, id), km_agents[a], NULL, 0);
-            mvprintw(7 + a, 3, "%c [%c] %s%s", row == a ? '>' : ' ', choices[a] ? 'x' : ' ', km_agents[a], compatible ? "" : " (native variant required)");
+            char line[160]; snprintf(line, sizeof(line), " %s [%c] %s%s", row == a ? ui_glyph(UI_GLYPH_CURSOR) : " ",
+                                     choices[a] ? 'x' : ' ', km_agents[a], compatible ? "" : " (native variant required)");
+            if (row == a) { attron(ui_style(UI_STYLE_SELECT)); mvhline(8 + a, 2, ' ', COLS - 4); attroff(ui_style(UI_STYLE_SELECT)); }
+            ui_put(8 + a, 2, row == a ? UI_STYLE_SELECT : choices[a] ? UI_STYLE_STRONG : UI_STYLE_TEXT, line, COLS - 4);
         }
-        if (globally_off) mvaddstr(10, 3, "Globally OFF: choices take effect after e enables this item.");
-        mvprintw(12, 3, "j/k move   Space toggle   Enter save   Esc cancel"); refresh();
+        if (globally_off) ui_put(9 + KM_AGENT_COUNT, 3, UI_STYLE_WARN, "Globally OFF: choices take effect after e enables this item.", COLS - 6);
+        hint(11 + KM_AGENT_COUNT, keys, 4); refresh();
         int key = getch();
         if (key == 27) return false;
         if (key == '\n' || key == KEY_ENTER) return true;
@@ -278,11 +291,21 @@ void ui_assign(KmUi *ui) {
 
 static void show_help(KmUi *ui) {
     if (!ui_modal_ready()) return;
-    dialog_title("Kitmux keyboard shortcuts");
-    const char *lines[] = {"1-5 / Tab   MCPs, Skills, Subagents, Clients, Status", "j/k / arrows   Move selection or scroll Status", "Enter / Left / Right   Expand groups; Enter shows item details", "Space   Select rows; repeated items are selected once", "e Toggle availability   a Assign clients   v Open details", "g New group  n Add item  x Edit/rename  d Remove", "m Group members or item groups   / Search   Esc Clear/cancel", "r Reconnect MCP   s Preview/adopt native configuration", "i Import (Subagents: profiles only)  p Duplicate subagent", "u Preview/apply skill update   b Roll back skill", "f Capture Status observation   c Doctor   q Quit", "", "Group clients show effective availability; [-] means mixed.", "Another group can enable an item. Explicit/global OFF wins.", "Your coding agent may still need a refresh or reload.", "Press any key to return."};
-    size_t count = sizeof(lines) / sizeof(*lines);
-    for (size_t i = 0; i + 1 < count && (int)i + 5 < LINES - 3; i++) mvaddnstr(5 + (int)i, 3, lines[i], COLS - 6);
-    mvaddnstr(LINES - 2, 3, lines[count - 1], COLS - 6);
+    ui_dialog_title("Keyboard shortcuts");
+    static const char *const keys[][2] = {
+        {"1-5, Tab", "MCPs, Skills, Subagents, Clients, Status"}, {"j/k, arrows", "Move selection or scroll Status"},
+        {"Enter, Left, Right", "Expand groups; Enter shows item details"}, {"Space", "Select rows for bulk actions"},
+        {"e, a, v", "Toggle availability, assign clients, open details"}, {"g, n, x, d", "New group, add, edit or rename, remove"},
+        {"m, /, Esc", "Group members or item groups, search, clear or cancel"}, {"r, s, i", "Reconnect MCP, preview sync, preview import"},
+        {"p, u, b", "Duplicate subagent, update skill, roll back skill"}, {"f, c, q", "Refresh Status or Clients, doctor, quit"}};
+    int y = 5;
+    for (size_t i = 0; i < sizeof(keys) / sizeof(*keys) && y < LINES - 6; i++, y++) {
+        ui_put(y, 3, UI_STYLE_STRONG, keys[i][0], 22); ui_put(y, 26, UI_STYLE_MUTED, keys[i][1], COLS - 29);
+    }
+    const char *notes[] = {"Groups show effective client availability; a half symbol or [-] means mixed.",
+                           "Explicit and global OFF win over groups. Coding agents may need a reload."};
+    for (size_t i = 0; i < 2 && y + 1 < LINES - 3; i++) ui_put(++y, 3, UI_STYLE_MUTED, notes[i], COLS - 6);
+    ui_put(LINES - 2, 3, UI_STYLE_STRONG, "Press any key to return.", COLS - 6);
     refresh(); while (getch() == ERR && !km_ui_interrupted) {} (void)ui;
 }
 

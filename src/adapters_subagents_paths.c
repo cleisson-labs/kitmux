@@ -10,7 +10,13 @@ static const char *agent_root(const char *agent) {
     if (!strcmp(agent,"codex")) return ".codex/agents";
     if (!strcmp(agent,"claude")) return ".claude/agents";
     if (!strcmp(agent,"opencode")) return ".config/opencode/agents";
+    if (!strcmp(agent,"antigravity")) return ".gemini/config/agents";
     return NULL;
+}
+
+/* Antigravity also discovers <root>/<id>/agent.md, one level deep. */
+int ad_subagent_folder_path(Km *km, char *path, const char *id) {
+    return km_path(km,path,PATH_MAX,"%s/.gemini/config/agents/%s/agent.md",km->home,id);
 }
 
 bool ad_subagent_path_valid(Km *km, const char *path, const char *agent, const char *id) {
@@ -18,7 +24,8 @@ bool ad_subagent_path_valid(Km *km, const char *path, const char *agent, const c
     if (!root || !path || !km_valid_id(id)) return false;
     if (km_path(km,expected,sizeof(expected),"%s/%s/%s.%s",km->home,root,id,
                 !strcmp(agent,"codex") ? "toml" : "md")<0) return false;
-    return !strcmp(path,expected);
+    if (!strcmp(path,expected)) return true;
+    return !strcmp(agent,"antigravity") && ad_subagent_folder_path(km,expected,id)==0 && !strcmp(path,expected);
 }
 
 static bool config_origin(Km *km, const char *path, const char *key, const char *id) {
@@ -75,7 +82,7 @@ int ad_subagent_parent_safe(Km *km, const char *path) {
     return 0;
 }
 
-static int flat_collection(Km *km, const char *agent, const char *relative, bool legacy) {
+static int flat_collection(Km *km, const char *agent, const char *relative, bool legacy, bool folders) {
     char root[PATH_MAX], path[PATH_MAX]; struct stat st;
     if (km_path(km,root,sizeof(root),"%s/%s",km->home,relative)<0 ||
         km_path(km,path,sizeof(path),"%s/validation",root)<0 || ad_subagent_parent_safe(km,path)<0) return -1;
@@ -89,6 +96,7 @@ static int flat_collection(Km *km, const char *agent, const char *relative, bool
         if (entry->d_name[0]=='.') continue;
         if (km_path(km,path,sizeof(path),"%s/%s",root,entry->d_name)<0) { result=-1; break; }
         if (lstat(path,&st)<0) { result=km_error(km,"Native subagent collection %s changed; retry",root); break; }
+        if (folders && S_ISDIR(st.st_mode)) continue;
         if (legacy || S_ISDIR(st.st_mode) || S_ISLNK(st.st_mode)) {
             result=km_error(km,"Unsupported nested, linked, or legacy %s subagent collection at %s; migrate profiles into "
                             "flat regular files under ~/%s before import or sync for %s",agent,path,agent_root(agent),agent);
@@ -99,8 +107,8 @@ static int flat_collection(Km *km, const char *agent, const char *relative, bool
 }
 
 int ad_subagent_flat_discovery(Km *km, const char *agent) {
-    if (flat_collection(km,agent,agent_root(agent),false)<0) return -1;
-    return !strcmp(agent,"opencode") ? flat_collection(km,agent,".config/opencode/agent",true) : 0;
+    if (flat_collection(km,agent,agent_root(agent),false,!strcmp(agent,"antigravity"))<0) return -1;
+    return !strcmp(agent,"opencode") ? flat_collection(km,agent,".config/opencode/agent",true,false) : 0;
 }
 
 /* Only "before" is ever written back (by restore), so it must parse. "after" and

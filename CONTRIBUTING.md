@@ -6,7 +6,7 @@ first so the design and compatibility requirements can be discussed.
 
 ## Local development
 
-Install the dependencies in the [README](README.md#build-and-run-from-source), including
+Install the dependencies in the [guide](docs/GUIDE.md#build-and-run-from-source), including
 Python 3.11+ for tests, then run:
 
 ```sh
@@ -30,7 +30,7 @@ Linux x86_64 retains default leak detection throughout the full suite.
 
 ## Release builds
 
-`make release VERSION=v0.6.0` builds pinned dependency archives in a private
+`make release VERSION=v0.7.0` builds pinned dependency archives in a private
 `build-release-deps` prefix and packages the executable under `dist/`. It needs
 CMake, Perl, curl, and the normal compiler/build tools. The build downloads and
 checks source archives; it never installs those dependencies into the host.

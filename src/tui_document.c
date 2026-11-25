@@ -82,7 +82,7 @@ static bool layout(DocumentRows *rows, const char *text, int width, bool markdow
         if (marker && (!fence || fence == *text)) fence = fence ? 0 : *text;
         else {
             const char *start = markdown && !fence ? heading(text, end) : text;
-            int style = fence ? A_DIM : start != text ? A_BOLD : A_NORMAL;
+            int style = fence ? ui_style(UI_STYLE_MUTED) : start != text ? ui_style(UI_STYLE_ACCENT) : A_NORMAL;
             if (!wrap_line(rows, start, end, width, style, fence ? 2 : 0)) return false;
         }
         text = *end ? end + 1 : end;
@@ -105,12 +105,12 @@ static void draw_row(const DocumentRow *line, int row) {
 }
 
 static void draw_document(KmUi *ui, const char *title, const DocumentRows *rows, size_t top, bool markdown) {
-    erase(); attron(A_BOLD); mvaddnstr(2, 3, title, COLS - 6); attroff(A_BOLD);
-    mvhline(3, 3, ACS_HLINE, COLS - 6);
+    ui_dialog_title(title);
     size_t visible = (size_t)(LINES - 9);
     for (size_t i = 0; i < visible && top + i < rows->count; i++) draw_row(&rows->rows[top + i], 5 + (int)i);
-    mvaddnstr(LINES - 2, 3, !markdown && ui->truncated ? "Output truncated. Inspect full output with the CLI. Esc returns." :
-              "j/k scroll  PgUp/PgDn page  g/G ends  Enter/Esc returns", COLS - 6);
+    static const char *const keys[] = {"j/k", "scroll", "PgUp/PgDn", "page", "g/G", "ends", "enter/esc", "return"};
+    if (!markdown && ui->truncated) ui_put(LINES - 2, 3, UI_STYLE_WARN, "Output truncated. Inspect full output with the CLI. Esc returns.", COLS - 6);
+    else ui_hints(LINES - 2, 3, keys, 4);
     refresh();
 }
 

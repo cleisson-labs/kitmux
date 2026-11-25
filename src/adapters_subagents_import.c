@@ -106,7 +106,7 @@ static int import_text(AdRun *run, const char *agent, const char *id, const char
     json_object_put(parsed);
     if (result>0) return skip(run,path,NULL);
     if (!result) result=ad_subagent_change(run,agent,path,id,agent,text,true);
-    if (!result) printf("import: %s subagent %s (%s)\n",agent,id,km_effective(run->km,"subagent",id,agent,NULL,0) ? "available" : "disabled");
+    if (!result) printf("%s: %s subagent %s (%s)\n",run->apply ? "import" : "preview",agent,id,km_effective(run->km,"subagent",id,agent,NULL,0) ? "available" : "disabled");
     return result;
 }
 

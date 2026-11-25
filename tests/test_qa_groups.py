@@ -30,5 +30,19 @@ class GroupAssignmentWarningTests(unittest.TestCase):
         self.assertNotIn("no claude variant", result.stderr)
 
 
+class ImportPreviewWordingTests(unittest.TestCase):
+    def test_subagent_import_preview_is_labelled_as_preview(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            (home / ".claude/agents").mkdir(parents=True)
+            (home / ".claude/agents/reviewer.md").write_text(
+                "---\nname: reviewer\ndescription: Reviews code\n---\nReview.\n")
+            result = subprocess.run([BINARY, "--home", str(home), "subagent", "import", "--from", "claude", "--preview"],
+                                    capture_output=True, text=True, timeout=20)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("preview: claude subagent reviewer", result.stdout)
+            self.assertNotIn("import: claude subagent", result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

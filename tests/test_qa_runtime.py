@@ -138,6 +138,40 @@ class QaRuntimeTests(unittest.TestCase):
         response = self.tools()
         self.assertIn("tools capability", response["error"]["message"])
 
+    # 4: stale control sockets
+    def test_sighup_removes_control_socket(self):
+        self.bridge()
+        self.assertEqual(len(list(self.sockets.iterdir())), 1)
+        self.process.send_signal(signal.SIGHUP)
+        self.process.wait(timeout=5)
+        self.assertEqual(list(self.sockets.iterdir()), [])
+
+    def test_scans_prune_sockets_of_exited_bridges(self):
+        self.bridge()
+        live = next(self.sockets.iterdir())
+        stale = live.with_name(live.name.split(".")[0] + "." + str(self.dead_pid()))
+        self.stale_socket(stale)
+        self.assertEqual(self.status()["state"], "idle")
+        self.assertFalse(stale.exists())
+        self.stale_socket(stale)
+        result = self.reconnect()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(stale.exists())
+
+    def test_bridge_replaces_stale_socket_carrying_its_pid(self):
+        self.bridge()
+        prefix = next(self.sockets.iterdir()).name.split(".")[0]
+        self.close_bridge()
+        code = ("import os, socket, sys\n"
+                "s = socket.socket(socket.AF_UNIX); s.bind(sys.argv[1] + '.' + str(os.getpid())); s.close()\n"
+                "os.execv(sys.argv[2], sys.argv[2:])\n")
+        self.process = subprocess.Popen([sys.executable, "-c", code, str(self.sockets / prefix), runtime_base.BINARY,
+                                         "--home", str(self.home), "bridge", "stub", "--agent", "codex"],
+                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.buffer = b""
+        self.send({"id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}}})
+        self.assertIn("result", self.reply(1))
+
     # 5: parser limits
     def test_deeply_nested_result_is_forwarded(self):
         self.bridge()

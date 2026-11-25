@@ -103,17 +103,20 @@ static int bridge(Km *km, const char *id, const char *agent) {
     if (rt_control_open(&rt) || rt_refresh(&rt, true)) { release(&rt); return -1; }
     struct sigaction handler = {.sa_handler = stop_signal}, ignore = {.sa_handler = SIG_IGN};
     struct sigaction child = {.sa_handler = SIG_DFL};
-    struct sigaction old_int, old_term, old_pipe, old_child;
+    struct sigaction old_int, old_term, old_hup, old_pipe, old_child;
     sigemptyset(&handler.sa_mask); sigemptyset(&ignore.sa_mask);
     interrupted = 0;
-    sigaction(SIGINT, &handler, &old_int); sigaction(SIGTERM, &handler, &old_term); sigaction(SIGPIPE, &ignore, &old_pipe);
+    /* A closed terminal sends SIGHUP; stop like SIGTERM so the socket is removed. */
+    sigaction(SIGINT, &handler, &old_int); sigaction(SIGTERM, &handler, &old_term); sigaction(SIGHUP, &handler, &old_hup);
+    sigaction(SIGPIPE, &ignore, &old_pipe);
     sigemptyset(&child.sa_mask); sigaction(SIGCHLD, &child, &old_child);
     int old_flags = fcntl(STDOUT_FILENO, F_GETFL);
     rt_nonblock(STDOUT_FILENO);
     int status = event_loop(&rt);
     release(&rt);
     fcntl(STDOUT_FILENO, F_SETFL, old_flags);
-    sigaction(SIGINT, &old_int, NULL); sigaction(SIGTERM, &old_term, NULL); sigaction(SIGPIPE, &old_pipe, NULL);
+    sigaction(SIGINT, &old_int, NULL); sigaction(SIGTERM, &old_term, NULL); sigaction(SIGHUP, &old_hup, NULL);
+    sigaction(SIGPIPE, &old_pipe, NULL);
     sigaction(SIGCHLD, &old_child, NULL);
     return status;
 }

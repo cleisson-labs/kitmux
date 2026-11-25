@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <signal.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -41,6 +42,8 @@ int rt_control_open(Rt *rt) {
                 socket_key(rt->id, rt->agent), (long)getpid())) return -1;
     struct sockaddr_un address;
     if (socket_address(rt->km, &address, rt->socket_path)) return -1;
+    /* The name carries our PID, so an existing socket belongs to an exited bridge. */
+    if (!lstat(rt->socket_path, &st) && S_ISSOCK(st.st_mode) && st.st_uid == getuid()) unlink(rt->socket_path);
     rt->control = socket(AF_UNIX, SOCK_STREAM, 0);
     if (rt->control < 0) return km_error(rt->km, "Cannot create MCP control socket");
     fcntl(rt->control, F_SETFD, FD_CLOEXEC);
@@ -207,8 +210,9 @@ static json_object *parse_reply(const char *line) {
     return reply;
 }
 
-static json_object *query_socket(Km *km, const char *path, const char *id, const char *agent, const char *command, double deadline, bool *attempted) {
-    *attempted = false;
+static json_object *query_socket(Km *km, const char *path, const char *id, const char *agent, const char *command,
+                                 double deadline, bool *attempted, bool *refused) {
+    *attempted = *refused = false;
     if (rt_clock() >= deadline) return NULL;
     *attempted = true;
     struct sockaddr_un address;
@@ -218,6 +222,7 @@ static json_object *query_socket(Km *km, const char *path, const char *id, const
     rt_nonblock(fd);
     fcntl(fd, F_SETFD, FD_CLOEXEC);
     int connected = connect(fd, (struct sockaddr *)&address, sizeof(address));
+    *refused = connected && (errno == ECONNREFUSED || errno == ENOENT);
     if (connected && errno == EINPROGRESS) {
         int error = 0; socklen_t length = sizeof(error);
         connected = control_poll(fd, POLLOUT, deadline) > 0 && !getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &length) && !error ? 0 : -1;
@@ -232,6 +237,21 @@ static json_object *query_socket(Km *km, const char *path, const char *id, const
     if (!valid_reply(reply, id, agent, command, peer_pid)) { json_object_put(reply); return NULL; }
     json_object_object_add(reply, "reachable", json_object_new_boolean(true));
     return reply;
+}
+
+/* Remove a socket nobody listens on only when the PID in its name has exited
+ * and the entry is still the one that was observed. */
+static bool remove_dead_socket(int directory, const char *name, size_t prefix, const struct stat *seen) {
+    const char *digits = name + prefix;
+    char *end = NULL;
+    errno = 0;
+    long pid = isdigit((unsigned char)*digits) ? strtol(digits, &end, 10) : 0;
+    if (errno || !end || *end || pid <= 0 || pid > INT_MAX) return false;
+    if (!kill((pid_t)pid, 0) || errno != ESRCH) return false;
+    struct stat now;
+    if (fstatat(directory, name, &now, AT_SYMLINK_NOFOLLOW) || now.st_dev != seen->st_dev || now.st_ino != seen->st_ino)
+        return false;
+    return unlinkat(directory, name, 0) == 0;
 }
 
 json_object *rt_control_connections(Km *km, const char *id, const char *agent, const char *command, int timeout_ms, bool *scan_complete) {
@@ -259,9 +279,10 @@ json_object *rt_control_connections(Km *km, const char *id, const char *agent, c
         if (++candidates > 64) { *scan_complete = false; break; }
         json_object *reply = NULL;
         if (!km_path(km, path, sizeof(path), "%s/%s", directory_path, entry->d_name)) {
-            bool attempted;
-            reply = query_socket(km, path, id, agent, command, deadline, &attempted);
+            bool attempted, refused;
+            reply = query_socket(km, path, id, agent, command, deadline, &attempted, &refused);
             if (!attempted) { *scan_complete = false; break; }
+            if (!reply && refused && remove_dead_socket(dirfd(directory), entry->d_name, strlen(prefix), &st)) continue;
         }
         if (!reply) {
             reply = json_object_new_object();

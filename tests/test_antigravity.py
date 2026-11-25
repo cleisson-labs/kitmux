@@ -76,6 +76,15 @@ class McpTests(AntigravityCase):
         self.cli("restore", "--agent", "antigravity", "--apply")
         self.assertEqual(json.loads(path.read_text()), json.loads(original))
 
+    def test_blank_config_created_by_agy_is_an_empty_configuration(self):
+        path = self.write(MCP, "")
+        self.cli("import", "--from", "antigravity", "--apply")
+        self.cli("sync", "--check")
+        self.assertEqual(path.read_bytes(), b"")
+        self.cli("mcp", "add", "local", "--command", "/usr/bin/true")
+        self.cli("mcp", "enable", "local", "--agent", "antigravity")
+        self.assertEqual(self.servers(), {"local": {"command": "/usr/bin/true"}})
+
     def test_sync_projects_assigned_mcps_in_agy_shape_only(self):
         self.cli("mcp", "add", "local", "--command", "/usr/bin/true", "--", "--stdio")
         self.cli("mcp", "add", "remote", "--url", "https://remote.invalid/mcp")

@@ -10,6 +10,7 @@ typedef struct AdFile {
     bool existed;
     bool toml;
     bool remove; /* delete the file instead of writing text */
+    bool blank;  /* existed but held only whitespace; edited as {} */
     struct AdFile *next;
 } AdFile;
 

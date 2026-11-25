@@ -57,7 +57,9 @@ AdFile *ad_file(AdRun *run, const char *agent, const char *relative, bool toml) 
         if (!file->original) { free(file); return NULL; }
     } else if (errno==ENOENT) file->original=strdup(toml ? "" : "{}\n");
     else { km_error(run->km,"cannot inspect native configuration for %s",agent); free(file); return NULL; }
-    file->text=strdup(file->original);
+    /* agy creates an empty mcp_config.json on first start and reads it as no servers. */
+    file->blank=!toml && !strcmp(agent,"antigravity") && !file->original[strspn(file->original," \t\r\n")];
+    file->text=strdup(file->blank ? "{}\n" : file->original);
     if (!file->text) { free(file->original); free(file); km_error(run->km,"out of memory"); return NULL; }
     if (!toml) {
         json_object *doc=ad_parse(run->km,file->text);
@@ -258,7 +260,8 @@ static int apply_link(AdRun *run, json_object *link) {
 
 /* One unwritable file must not stop the other clients' native writes. */
 static bool file_changed(const AdFile *file) {
-    return file->remove ? file->existed : strcmp(file->original,file->text)!=0;
+    if (file->remove) return file->existed;
+    return strcmp(file->blank ? "{}\n" : file->original,file->text)!=0;
 }
 
 static int remove_file(AdRun *run, AdFile *file) {

@@ -34,14 +34,20 @@ static bool select_members(KmUi *ui, char **names, bool *choices, size_t count, 
     size_t row = 0, top = 0;
     while (!km_ui_interrupted) {
         if (!ui_modal_ready()) return false;
-        erase(); attron(A_BOLD); mvaddstr(2, 3, group ? "Group members" : "Item groups"); attroff(A_BOLD);
-        mvaddstr(4, 3, "Space toggles membership. Enter saves. Esc cancels.");
+        static const char *const keys[] = {"j/k", "move", "space", "toggle", "enter", "save", "esc", "cancel"};
+        ui_dialog_title(group ? "Group members" : "Item groups");
+        ui_hints(4, 3, keys, 4);
         size_t visible = LINES > 9 ? (size_t)LINES - 9 : 1;
         if (row < top) top = row;
         if (row >= top + visible) top = row - visible + 1;
         for (size_t i = top; i < count && i < top + visible; i++)
-            mvprintw(6 + (int)(i - top), 3, "%c [%c] %.*s", row == i ? '>' : ' ', choices[i] ? 'x' : ' ', COLS - 10, names[i]);
-        if (!count) mvaddstr(6, 3, group ? "Add a resource in this tab first." : "Press g in the resource list to create a group.");
+        {
+            int y = 6 + (int)(i - top); char line[160];
+            snprintf(line, sizeof(line), " %s [%c] %s", row == i ? ui_glyph(UI_GLYPH_CURSOR) : " ", choices[i] ? 'x' : ' ', names[i]);
+            if (row == i) { attron(ui_style(UI_STYLE_SELECT)); mvhline(y, 2, ' ', COLS - 4); attroff(ui_style(UI_STYLE_SELECT)); }
+            ui_put(y, 2, row == i ? UI_STYLE_SELECT : choices[i] ? UI_STYLE_STRONG : UI_STYLE_TEXT, line, COLS - 4);
+        }
+        if (!count) ui_put(6, 3, UI_STYLE_MUTED, group ? "Add a resource in this tab first." : "Press g in the resource list to create a group.", COLS - 6);
         refresh(); int key = getch();
         if (key == 27) return false;
         if (key == '\n' || key == KEY_ENTER) return true;

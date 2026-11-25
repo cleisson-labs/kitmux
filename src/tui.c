@@ -12,123 +12,46 @@
 volatile sig_atomic_t km_ui_interrupted;
 static const char *const tabs[] = {"MCPs", "Skills", "Subagents", "Clients", "Status"};
 
+/* Each tab label is one run of text, so "1 MCPs" stays searchable in tests and logs. */
 static void draw_tabs(KmUi *ui) {
     int x = 2;
     for (int i = 0; i < UI_TAB_COUNT; i++) {
-        if (i == ui->tab) attron(A_BOLD | A_UNDERLINE | (ui->colors ? COLOR_PAIR(1) : 0));
-        mvprintw(3, x, "%d %s", i + 1, tabs[i]);
-        if (i == ui->tab) attroff(A_BOLD | A_UNDERLINE | (ui->colors ? COLOR_PAIR(1) : 0));
-        x += (int)strlen(tabs[i]) + 5;
+        char label[32]; snprintf(label, sizeof(label), " %d %s ", i + 1, tabs[i]);
+        ui_put(3, x, i == ui->tab ? UI_STYLE_SELECT : UI_STYLE_TEXT, label, COLS - x - 2);
+        x += (int)strlen(label) + 1;
     }
-    mvhline(4, 2, ACS_HLINE, COLS - 4);
+    ui_rule(4, 2, COLS - 4);
 }
 
-static size_t array_length(json_object *array) {
-    return json_object_is_type(array, json_type_array) ? json_object_array_length(array) : 0;
-}
-
-/* Wider terminals show longer IDs; the minimum keeps the 74-column layout intact. */
-static int name_width(void) {
-    int width = COLS - 45;
-    return width < 22 ? 22 : width > 64 ? 64 : width;
-}
-
-static void draw_name(int y, int x, const char *name, int width) {
-    if ((int)strlen(name) <= width) mvprintw(y, x, "%-*s", width, name);
-    else mvprintw(y, x, "%.*s~", width - 1, name);
-}
-
-static size_t row_member_count(KmUi *ui, const KmUiRow *row) {
-    if (row->type == UI_GROUP) return array_length(km_get(ui_group_item(ui, row->id), "members"));
-    size_t count = 0;
-    json_object_object_foreach(km_resources(ui->km, ui_kind(ui)), id, item) {
-        (void)item; bool grouped = false;
-        json_object_object_foreach(km_get(ui->km->catalog, "groups"), key, group) {
-            (void)key;
-            const char *kind = km_string(group, "kind");
-            if (!kind || strcmp(kind, ui_kind(ui))) continue;
-            json_object *members = km_get(group, "members");
-            char reference[80]; snprintf(reference, sizeof(reference), "%s:%s", kind, id);
-            for (size_t m = 0; m < array_length(members); m++)
-                if (!strcmp(json_object_get_string(json_object_array_get_idx(members, m)), reference)) grouped = true;
-        }
-        if (!grouped) count++;
+/* Clients text marks each client's first line and pending-sync lines for styling. */
+static KmUiStyle client_line_style(const char *line) {
+    if (!strncmp(line, "  Native sync pending", 21)) return UI_STYLE_WARN;
+    if (!strncmp(line, "  ", 2) || !*line) return UI_STYLE_MUTED;
+    for (int a = 0; a < KM_AGENT_COUNT; a++) {
+        size_t length = strlen(km_agents[a]);
+        if (!strncmp(line, km_agents[a], length) && line[length] == ':') return UI_STYLE_STRONG;
     }
-    return count;
-}
-
-static char group_client_state(KmUi *ui, json_object *group, const char *agent) {
-    json_object *members = km_get(group, "members"); size_t on = 0, count = array_length(members);
-    for (size_t i = 0; i < count; i++) {
-        const char *reference = json_object_get_string(json_object_array_get_idx(members, i));
-        const char *id = strchr(reference, ':');
-        if (id && km_effective(ui->km, ui_kind(ui), id + 1, agent, NULL, 0)) on++;
-    }
-    return !on ? ' ' : on == count ? 'x' : '-';
-}
-
-static void draw_row(KmUi *ui, int i, int y) {
-    const KmUiRow *row = &ui->rows[i]; const char *id = row->id;
-    json_object *item = row->type == UI_GROUP ? ui_group_item(ui, id) : ui_item(ui, id);
-    json_object *flag = km_get(item, "enabled");
-    bool enabled = !flag || json_object_get_boolean(flag);
-    int style = i == ui->row ? A_REVERSE | A_BOLD : 0;
-    if (row->type != UI_RESOURCE) style |= A_BOLD | (ui->colors ? COLOR_PAIR(1) : 0);
-    if (style) attron(style);
-    mvhline(y, 2, ' ', COLS - 4);
-    char key[80]; ui_mark_key(row, key, sizeof(key));
-    int width = name_width();
-    mvprintw(y, 2, "%c %c", i == ui->row ? '>' : ' ', row->type != UI_UNGROUPED && km_get(ui->marks, key) ? '*' : ' ');
-    if (row->type == UI_RESOURCE) {
-        draw_name(y, 8, id, width);
-        mvprintw(y, 9 + width, "%-5s", enabled ? "ON" : "OFF");
-    } else {
-        char label[96]; snprintf(label, sizeof(label), "%c %s (%zu)", ui_is_collapsed(ui, row) ? '>' : 'v', id, row_member_count(ui, row));
-        bool mixed = false;
-        for (int a = 0; row->type == UI_GROUP && a < KM_AGENT_COUNT; a++)
-            if (group_client_state(ui, item, km_agents[a]) == '-') mixed = true;
-        draw_name(y, 6, label, width + 2);
-        mvprintw(y, 9 + width, "%-5s", row->type == UI_UNGROUPED ? "" : !enabled ? "OFF" : mixed ? "MIX" : "ON");
-    }
-    for (int a = 0; row->type != UI_UNGROUPED && a < KM_AGENT_COUNT; a++) {
-        char marker = row->type == UI_GROUP ? group_client_state(ui, item, km_agents[a]) :
-                      km_effective(ui->km, ui_kind(ui), id, km_agents[a], NULL, 0) ? 'x' : ' ';
-        if (row->type == UI_RESOURCE && ui->tab == UI_SUBAGENTS && !km_subagent_compatible(item, km_agents[a], NULL, 0)) marker = '!';
-        mvprintw(y, 18 + width + a * 10, "[%c]", marker);
-    }
-    if (style) attroff(style);
-}
-
-static int draw_resource_clients(KmUi *ui, json_object *item, const char *id, int start) {
-    for (int a = 0; a < KM_AGENT_COUNT && start < LINES - 5; a++) {
-        char reason[192] = "";
-        bool compatible = ui->tab != UI_SUBAGENTS || km_subagent_compatible(item, km_agents[a], reason, sizeof(reason));
-        const char *state = "N/A";
-        if (compatible) state = km_effective(ui->km, ui_kind(ui), id, km_agents[a], reason, sizeof(reason)) ? "ON" : "OFF";
-        mvprintw(start++, 4, "%-9s %-3s  %.52s", km_agents[a], state, reason);
-    }
-    return start;
-}
-
-static void draw_details(KmUi *ui, int start) {
-    const char *id = ui_current(ui);
-    json_object *item = ui_current_item(ui);
-    if (!id || !item || start >= LINES - 6) return;
-    mvhline(start++, 2, ACS_HLINE, COLS - 4);
-    attron(A_BOLD); mvprintw(start++, 2, "%s", id); attroff(A_BOLD);
-    if (ui_group_selected(ui)) {
-        mvaddnstr(start++, 4, "Clients show effective member availability; [-] means mixed.", COLS - 8);
-        if (start < LINES - 5) mvaddnstr(start++, 4, "Other groups can enable members. Explicit/global OFF still wins.", COLS - 8);
-        if (start < LINES - 5) mvaddnstr(start, 4, "m: choose members   a: group clients   e: group availability", COLS - 8);
-    } else start = draw_resource_clients(ui, item, id, start);
-    if (ui->tab == UI_SUBAGENTS && start < LINES - 5)
-        mvaddnstr(start, 4, "Native reload required after changes; running work stays native.", COLS - 8);
+    return UI_STYLE_MUTED;
 }
 
 static void draw_clients(KmUi *ui) {
-    mvaddstr(6, 3, "Native clients | adoption and native configuration state");
-    mvhline(7, 3, ACS_HLINE, COLS - 6);
-    ui_text_lines(ui->clients, 8, LINES - 14, 0);
+    ui_put(6, 3, UI_STYLE_STRONG, "Native clients", COLS - 6);
+    ui_put(6, 18, UI_STYLE_MUTED, "adoption and native configuration state", COLS - 22);
+    ui_rule(7, 3, COLS - 6);
+    int y = 8;
+    for (const char *line = ui->clients; *line && y < LINES - 5;) {
+        size_t length = strcspn(line, "\n");
+        char text[1024]; snprintf(text, sizeof(text), "%.*s", (int)(length < sizeof(text) - 1 ? length : sizeof(text) - 1), line);
+        KmUiStyle style = client_line_style(text);
+        char *colon = style == UI_STYLE_STRONG ? strchr(text, ':') : NULL;
+        if (colon) {   /* bold client name; the rest reads as normal or grey text */
+            *colon = '\0'; ui_put(y, 3, UI_STYLE_STRONG, text, COLS - 6);
+            int x = 3 + (int)strlen(text);
+            ui_put(y, x, strstr(colon + 1, "not adopted") ? UI_STYLE_MUTED : UI_STYLE_TEXT, ":", 1);
+            y += ui_wrapped(y, x + 1, COLS - 6 - x, strstr(colon + 1, "not adopted") ? UI_STYLE_MUTED : UI_STYLE_TEXT, colon + 1, LINES - 5 - y);
+        } else y += ui_wrapped(y, 3, COLS - 6, style, text, LINES - 5 - y);
+        line += length + (line[length] == '\n');
+    }
 }
 
 void ui_refresh_status(KmUi *ui) {
@@ -140,13 +63,48 @@ void ui_refresh_status(KmUi *ui) {
 }
 
 static void draw_status(KmUi *ui) {
-    mvaddstr(6, 3, "Runtime snapshot | Catalog and upstream observation");
-    char captured[32] = "not captured"; struct tm local;
-    if (ui->snapshot_at && localtime_r(&ui->snapshot_at, &local)) strftime(captured, sizeof(captured), "%H:%M:%S", &local);
-    mvprintw(7, 3, "Captured %s   f: capture new observation   j/k: scroll", captured);
-    mvhline(8, 3, ACS_HLINE, COLS - 6);
+    ui_put(6, 3, UI_STYLE_STRONG, "Runtime snapshot", COLS - 6);
+    ui_put(6, 20, UI_STYLE_MUTED, "Catalog and upstream observation", COLS - 24);
+    char captured[64] = "Not captured yet"; struct tm local;
+    if (ui->snapshot_at && localtime_r(&ui->snapshot_at, &local)) strftime(captured, sizeof(captured), "Captured %H:%M:%S", &local);
+    ui_put(7, 3, UI_STYLE_MUTED, captured, COLS - 6);
+    ui_rule(8, 3, COLS - 6);
     ui->snapshot_more = *ui_text_lines(*ui->snapshot ? ui->snapshot : "No observation available. Press f to retry.", 9, LINES - 15, ui->snapshot_top) != '\0';
-    mvaddnstr(LINES - 5, 3, ui->snapshot_truncated ? "Snapshot truncated. Use kitmux status for full diagnostics." : "Upstream observation only; native client refresh is unverified.", COLS - 6);
+    ui_put(LINES - 5, 3, ui->snapshot_truncated ? UI_STYLE_WARN : UI_STYLE_MUTED, ui->snapshot_truncated ?
+           "Snapshot truncated. Use kitmux status for full diagnostics." : "Upstream observation only; native client refresh is unverified.", COLS - 6);
+}
+
+static void draw_header(KmUi *ui) {
+    ui_put(1, 2, UI_STYLE_ACCENT, "kitmux", 6);
+    ui_put(1, 9, UI_STYLE_MUTED, KM_VERSION, 12);
+    ui_put(1, 18, UI_STYLE_MUTED, MB_CUR_MAX > 1 ? "MCPs · skills · subagents for your coding clients" :
+           "MCPs, skills, and subagents for your coding clients", COLS - 20);
+    if (*ui->sync_error) {
+        char banner[640]; snprintf(banner, sizeof(banner), "! Native sync pending (4: Clients): %s", ui->sync_error);
+        ui_put(2, 2, UI_STYLE_WARN, banner, COLS - 4);
+    }
+    draw_tabs(ui);
+}
+
+static void draw_footer(KmUi *ui) {
+    if (*ui->filter && ui->tab < UI_CLIENTS) {
+        char filter[160]; snprintf(filter, sizeof(filter), "Filter: %.100s", ui->filter);
+        ui_put(LINES - 5, 2, UI_STYLE_TEXT, filter, COLS - 26);
+    }
+    size_t marked = (size_t)json_object_object_length(ui->marks);
+    char selected[32]; snprintf(selected, sizeof(selected), "%zu selected", marked);
+    if (marked && ui->tab < UI_CLIENTS) ui_put(LINES - 5, COLS - 22, UI_STYLE_ACCENT, selected, 20);
+    ui_rule(LINES - 4, 2, COLS - 4);
+    static const char *const list[] = {"enter", "details", "space", "select", "e", "toggle", "a", "clients", "m", "groups",
+                                       "g", "new group", "n", "add", "x", "edit", "d", "remove", "/", "search", "?", "help", "q", "quit"};
+    static const char *const clients[] = {"s", "preview sync", "i", "preview import", "c", "doctor", "f", "refresh",
+                                          "1-5", "tabs", "?", "help", "q", "quit"};
+    static const char *const status[] = {"j/k", "scroll", "f", "capture", "s", "sync", "c", "doctor",
+                                         "1-5", "tabs", "?", "help", "q", "quit"};
+    if (ui->tab == UI_STATUS) ui_hints(LINES - 3, 2, status, 7);
+    else if (ui->tab == UI_CLIENTS) ui_hints(LINES - 3, 2, clients, 7);
+    else ui_hints(LINES - 3, 2, list, 12);
+    if (*ui->notice) ui_put(LINES - 1, 2, ui->notice_error ? UI_STYLE_WARN : UI_STYLE_STRONG, ui->notice, COLS - 4);
 }
 
 void ui_draw(KmUi *ui) {
@@ -155,38 +113,11 @@ void ui_draw(KmUi *ui) {
         mvaddnstr(0, 0, "Kitmux needs a terminal of at least 74 columns x 20 rows. q exits.", COLS - 1);
         refresh(); return;
     }
-    attron(A_BOLD | (ui->colors ? COLOR_PAIR(1) : 0)); mvaddstr(1, 2, "kitmux");
-    attroff(A_BOLD | (ui->colors ? COLOR_PAIR(1) : 0));
-    mvaddstr(1, 18, "MCPs, skills, and subagents. Your choice of clients.");
-    if (*ui->sync_error) {
-        attron(A_BOLD | (ui->colors ? COLOR_PAIR(1) : 0));
-        mvprintw(2, 2, "! Native sync pending (4: Clients): %.*s", COLS > 40 ? COLS - 40 : 1, ui->sync_error);
-        attroff(A_BOLD | (ui->colors ? COLOR_PAIR(1) : 0));
-    }
-    draw_tabs(ui);
-    if (ui->tab < UI_CLIENTS) {
-        int width = name_width();
-        mvprintw(6, 6, "%s", tabs[ui->tab]); mvprintw(6, 9 + width, "STATE");
-        mvprintw(6, 16 + width, "CODEX     CLAUDE    OPENCODE");
-        int visible = ui->details ? (LINES - 15) / 2 : LINES - 13;
-        if (ui->row >= ui->top + visible) ui->top = ui->row - visible + 1;
-        for (int i = ui->top; i < ui->count && i < ui->top + visible; i++) draw_row(ui, i, 8 + i - ui->top);
-        if (!ui->count && *ui->filter) mvprintw(9, 4, "No matches for \"%.40s\". Esc clears the search.", ui->filter);
-        else if (!ui->count) mvprintw(9, 4, "Nothing here yet. Press n to add, or i to import.");
-        if (ui->details) draw_details(ui, 8 + visible);
-    } else if (ui->tab == UI_CLIENTS) draw_clients(ui); else draw_status(ui);
-    if (*ui->filter && ui->tab < UI_CLIENTS) mvprintw(LINES - 5, 2, "Filter: %.100s", ui->filter);
-    size_t marked = (size_t)json_object_object_length(ui->marks);
-    if (marked && ui->tab < UI_CLIENTS) mvprintw(LINES - 5, COLS - 22, "%zu selected", marked);
-    mvhline(LINES - 4, 2, ACS_HLINE, COLS - 4);
-    const char *actions = ui->tab == UI_STATUS ? "j/k scroll  f capture observation  s sync  c doctor" :
-                          ui->tab == UI_CLIENTS ? "s preview sync  i preview import  c doctor  f refresh" :
-                          "Enter expand/details  Space select  e toggle  a clients  m groups/members";
-    const char *navigation = ui->tab >= UI_CLIENTS ? "1-5 tabs  ? help  q quit" :
-                             "g group  n add  x edit  d remove  / search  1-5 tabs  ? help  q quit";
-    mvaddnstr(LINES - 3, 2, actions, COLS - 4);
-    mvaddnstr(LINES - 2, 2, navigation, COLS - 4);
-    if (*ui->notice) { attron(A_BOLD); mvaddnstr(LINES - 1, 2, ui->notice, COLS - 4); attroff(A_BOLD); }
+    draw_header(ui);
+    if (ui->tab < UI_CLIENTS) ui_draw_list(ui);
+    else if (ui->tab == UI_CLIENTS) draw_clients(ui);
+    else draw_status(ui);
+    draw_footer(ui);
     refresh();
 }
 
@@ -262,7 +193,7 @@ int km_tui(Km *km) {
     cbreak(); noecho(); keypad(stdscr, TRUE); curs_set(0); timeout(100);
     if (!getenv("ESCDELAY")) set_escdelay(25);
     ui.colors = !getenv("NO_COLOR") && has_colors();
-    if (ui.colors) { start_color(); use_default_colors(); init_pair(1, COLORS >= 256 ? 208 : COLOR_YELLOW, -1); }
+    ui_theme_init(ui.colors);
     struct sigaction action = {.sa_handler = interrupted}, old_int, old_term;
     sigemptyset(&action.sa_mask); km_ui_interrupted = 0;
     sigaction(SIGINT, &action, &old_int); sigaction(SIGTERM, &action, &old_term);

@@ -5,7 +5,18 @@
 
 #define RT_MAX_LINE (1024u * 1024u)
 #define RT_MAX_PENDING 64
-typedef struct { char *bytes; size_t length; } RtReader;
+#define RT_JSON_DEPTH 512
+#define RT_MAX_NOISE 64
+
+/* The current line stays valid until the next rt_next/rt_read on its reader. */
+typedef struct {
+    char *bytes;
+    size_t length;
+    size_t consumed;
+    const char *line;
+    size_t line_length;
+    unsigned noise;
+} RtReader;
 typedef struct {
     Km *km;
     const char *id;
@@ -31,10 +42,14 @@ typedef struct {
 double rt_clock(void);
 int rt_nonblock(int fd);
 int rt_send(Km *km, int fd, json_object *message);
+int rt_send_line(Km *km, int fd, const char *line, size_t length);
 int rt_error(Rt *rt, json_object *id, int code, const char *message);
 int rt_result(Rt *rt, json_object *id, json_object *result);
 int rt_read(Km *km, int fd, RtReader *reader);
 int rt_next(Km *km, RtReader *reader, json_object **message);
+bool rt_noise(RtReader *reader);
+json_object *rt_line_id(const RtReader *reader);
+bool rt_identifier(json_object *value);
 void rt_fail_pending(Rt *rt, const char *message);
 int rt_start(Rt *rt);
 void rt_stop(Rt *rt, const char *message);

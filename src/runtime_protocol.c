@@ -49,10 +49,6 @@ bool rt_legacy_version(const char *version) {
     return false;
 }
 
-static bool identifier(json_object *value) {
-    return json_object_is_type(value, json_type_int) || json_object_is_type(value, json_type_string);
-}
-
 static bool text_field(json_object *object, const char *key, bool nonempty) {
     json_object *value = km_get(object, key);
     if (!json_object_is_type(value, json_type_string)) return false;
@@ -72,18 +68,26 @@ static bool request_shape(json_object *packet) {
            !json_object_object_get_ex(packet, "error", &reserved);
 }
 
+static int forward_down(Rt *rt) {
+    return rt_send_line(rt->km, STDOUT_FILENO, rt->upstream.line, rt->upstream.line_length);
+}
+
+static int forward_up(Rt *rt) {
+    return rt_send_line(rt->km, rt->upstream_in, rt->downstream.line, rt->downstream.line_length);
+}
+
 static bool cancelled(json_object *record) {
     return json_object_get_boolean(km_get(record, "cancelled"));
 }
 
 static int cancel_request(Rt *rt, json_object *packet) {
     json_object *params = km_get(packet, "params"), *id = km_get(params, "requestId"), *reason = NULL;
-    if (!rt->initialized || rt->child <= 0 || !identifier(id) ||
+    if (!rt->initialized || rt->child <= 0 || !rt_identifier(id) ||
         (json_object_object_get_ex(params, "reason", &reason) && !text_field(params, "reason", false))) return 0;
     const char *key = json_object_to_json_string_ext(id, JSON_C_TO_STRING_PLAIN);
     json_object *record = km_get(rt->pending, key);
     if (!record || cancelled(record)) return 0;
-    if (rt_send(rt->km, rt->upstream_in, packet)) {
+    if (forward_up(rt)) {
         rt_stop(rt, "MCP disconnected during cancellation; completion unknown, call not replayed");
         return 0;
     }
@@ -135,7 +139,7 @@ static int forward_request(Rt *rt, json_object *packet, json_object *id) {
     if (km_get(rt->pending, key)) return rt_error(rt, id, -32600, "Duplicate outstanding request ID");
     json_object *meta = km_get(km_get(packet, "params"), "_meta"), *token = NULL;
     bool has_token = meta && json_object_object_get_ex(meta, "progressToken", &token);
-    if (has_token && (!identifier(token) || !unique_progress_token(rt, token)))
+    if (has_token && (!rt_identifier(token) || !unique_progress_token(rt, token)))
         return rt_error(rt, id, -32602, "progressToken must be a unique active string or integer");
     if (rt_start(rt)) return rt_error(rt, id, -32000, rt->km->error);
     json_object *record = json_object_new_object();
@@ -143,7 +147,7 @@ static int forward_request(Rt *rt, json_object *packet, json_object *id) {
     json_object_object_add(record, "id", json_object_get(id));
     if (token) json_object_object_add(record, "progressToken", json_object_get(token));
     json_object_object_add(rt->pending, key, record);
-    if (!rt_send(rt->km, rt->upstream_in, packet)) return 0;
+    if (!forward_up(rt)) return 0;
     rt_stop(rt, "MCP disconnected; completion unknown, call not replayed");
     return 0;
 }
@@ -153,7 +157,7 @@ int rt_client(Rt *rt, json_object *packet) {
     const char *method = km_string(packet, "method");
     json_object *id = NULL;
     bool has_id = json_object_object_get_ex(packet, "id", &id);
-    if (has_id && !identifier(id)) return rt_error(rt, NULL, -32600, "MCP request IDs must be strings or integers");
+    if (has_id && !rt_identifier(id)) return rt_error(rt, NULL, -32600, "MCP request IDs must be strings or integers");
     if (!request_shape(packet)) return has_id ? rt_error(rt, id, -32600, "Expected an MCP request object") : 0;
     if (!has_id) {
         if (!strcmp(method, "notifications/cancelled")) return cancel_request(rt, packet);
@@ -162,8 +166,8 @@ int rt_client(Rt *rt, json_object *packet) {
     if (!strcmp(method, "server/discover"))
         return rt_error(rt, id, -32601, "Managed bridge uses legacy initialize; modern discovery is unsupported");
     if (!strcmp(method, "initialize")) return initialize(rt, packet, id);
-    if (!rt->initialized) return rt_error(rt, id, -32002, "Initialize the MCP connection first");
     if (!strcmp(method, "ping")) return rt_result(rt, id, json_object_new_object());
+    if (!rt->initialized) return rt_error(rt, id, -32002, "Initialize the MCP connection first");
     bool list = !strcmp(method, "tools/list"), call = !strcmp(method, "tools/call");
     if (!list && !call) return rt_error(rt, id, -32601, "Managed bridge supports tools only; use direct mode for other capabilities");
     json_object *params = km_get(packet, "params"), *cursor = NULL, *task = NULL;
@@ -207,7 +211,7 @@ static bool finite_number(json_object *value) {
 static int forward_progress(Rt *rt, json_object *packet) {
     json_object *params = km_get(packet, "params"), *token = km_get(params, "progressToken");
     json_object *progress = km_get(params, "progress"), *total = NULL, *message = NULL;
-    if (!identifier(token) || !finite_number(progress) ||
+    if (!rt_identifier(token) || !finite_number(progress) ||
         (json_object_object_get_ex(params, "total", &total) && !finite_number(total)) ||
         (json_object_object_get_ex(params, "message", &message) && !text_field(params, "message", false))) return 0;
     json_object_object_foreach(rt->pending, key, record) {
@@ -216,7 +220,7 @@ static int forward_progress(Rt *rt, json_object *packet) {
         if (!expected || !json_object_equal(expected, token) || cancelled(record)) continue;
         if (previous && json_object_get_double(progress) <= json_object_get_double(previous)) return 0;
         json_object_object_add(record, "progress", json_object_get(progress));
-        return rt_send(rt->km, STDOUT_FILENO, packet);
+        return forward_down(rt);
     }
     return 0;
 }
@@ -236,21 +240,21 @@ int rt_server(Rt *rt, json_object *packet) {
     json_object *id = NULL;
     bool has_id = json_object_object_get_ex(packet, "id", &id);
     if (method) {
-        if (!request_shape(packet) || (has_id && !identifier(id))) {
+        if (!request_shape(packet) || (has_id && !rt_identifier(id))) {
             rt_stop(rt, "Invalid MCP request; completion unknown, call not replayed");
             return 0;
         }
         if (has_id) return reject_server_request(rt, packet, id);
         if (!strcmp(method, "notifications/progress")) return forward_progress(rt, packet);
-        return !strcmp(method, "notifications/tools/list_changed") ? rt_send(rt->km, STDOUT_FILENO, packet) : 0;
+        return !strcmp(method, "notifications/tools/list_changed") ? forward_down(rt) : 0;
     }
     const char *key = has_id ? json_object_to_json_string_ext(id, JSON_C_TO_STRING_PLAIN) : NULL;
     json_object *record = key ? km_get(rt->pending, key) : NULL;
-    if (!identifier(id) || !record || !response_shape(packet)) {
+    if (!rt_identifier(id) || !record || !response_shape(packet)) {
         rt_stop(rt, "Invalid MCP response; completion unknown, call not replayed");
         return 0;
     }
-    int status = cancelled(record) ? 0 : rt_send(rt->km, STDOUT_FILENO, packet);
+    int status = cancelled(record) ? 0 : forward_down(rt);
     json_object_object_del(rt->pending, key);
     return status;
 }

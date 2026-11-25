@@ -10,6 +10,33 @@
 static volatile sig_atomic_t interrupted;
 static void stop_signal(int signal_number) { (void)signal_number; interrupted = 1; }
 
+static int invalid_input(Rt *rt) {
+    json_object *id = rt_line_id(&rt->downstream);
+    int status = rt_error(rt, id, -32700, "Invalid JSON-RPC input");
+    json_object_put(id);
+    return status;
+}
+
+/* Skip non-protocol noise. A rejected response that still names an outstanding
+ * request fails only that request; anything else stops the upstream. */
+static int invalid_output(Rt *rt) {
+    if (rt_noise(&rt->upstream)) return 0;
+    json_object *id = rt_line_id(&rt->upstream);
+    const char *key = id ? json_object_to_json_string_ext(id, JSON_C_TO_STRING_PLAIN) : NULL;
+    json_object *record = key ? km_get(rt->pending, key) : NULL;
+    int status = 0;
+    if (record) {
+        if (!json_object_get_boolean(km_get(record, "cancelled")))
+            status = rt_error(rt, km_get(record, "id"), -32000, "MCP response could not be parsed by the bridge; it may exceed the nesting limit");
+        json_object_object_del(rt->pending, key);
+    } else {
+        rt_stop(rt, "Invalid MCP input; completion unknown, call not replayed");
+        status = rt_changed(rt);
+    }
+    json_object_put(id);
+    return status;
+}
+
 static int drain(Rt *rt, bool downstream) {
     RtReader *reader = downstream ? &rt->downstream : &rt->upstream;
     for (;;) {
@@ -17,10 +44,11 @@ static int drain(Rt *rt, bool downstream) {
         int next = rt_next(rt->km, reader, &packet);
         if (!next) return 0;
         if (next < 0) {
-            if (downstream) { if (rt_error(rt, NULL, -32700, "Invalid JSON-RPC input")) return -1; continue; }
-            rt_stop(rt, "Invalid MCP input; completion unknown, call not replayed");
-            return rt_changed(rt);
+            if (downstream ? invalid_input(rt) : invalid_output(rt)) return -1;
+            if (!downstream && rt->upstream_out < 0) return 0;
+            continue;
         }
+        reader->noise = 0;
         int status = downstream ? rt_client(rt, packet) : rt_server(rt, packet);
         json_object_put(packet);
         if (status) return -1;

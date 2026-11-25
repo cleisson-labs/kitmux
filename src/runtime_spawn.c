@@ -81,7 +81,7 @@ void rt_stop(Rt *rt, const char *message) {
     if (rt->upstream_in >= 0) close(rt->upstream_in);
     if (rt->upstream_out >= 0) close(rt->upstream_out);
     rt->upstream_in = rt->upstream_out = -1;
-    rt->upstream.length = 0;
+    rt->upstream = (RtReader){.bytes = rt->upstream.bytes};
     rt->upstream_protocol[0] = '\0';
     /* Client backpressure must never delay stopping the owned process group. */
     stop_child(rt);
@@ -93,8 +93,10 @@ static int wait_reply(Rt *rt, const char *id, json_object **answer) {
     for (int skipped = 0; skipped < 64 && rt_clock() < deadline;) {
         json_object *packet = NULL;
         int ready = rt_next(rt->km, &rt->upstream, &packet);
+        if (ready < 0 && rt_noise(&rt->upstream)) continue;
         if (ready < 0) return -1;
         if (ready) {
+            rt->upstream.noise = 0;
             const char *reply_id = km_string(packet, "id");
             json_object *value = km_get(packet, "id");
             if (reply_id && strlen(reply_id) == (size_t)json_object_get_string_len(value) && !strcmp(reply_id, id)) {

@@ -3,7 +3,6 @@ import fcntl
 import json
 import os
 from pathlib import Path
-import re
 import select
 import signal
 import struct

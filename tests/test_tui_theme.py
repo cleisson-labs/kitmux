@@ -48,7 +48,9 @@ def color_codes(output):
         while index < len(parts):
             part = parts[index]
             if part in ("38", "48") and index + 2 < len(parts) and parts[index + 1] == "5":
-                codes.add(";".join(parts[index:index + 3])); index += 3; continue
+                codes.add(";".join(parts[index:index + 3]))
+                index += 3
+                continue
             if part and (30 <= int(part) <= 49 or 90 <= int(part) <= 107):
                 codes.add(part)
             index += 1

@@ -42,6 +42,12 @@ Repository links, badges, the staged installer download URL, and provenance
 verification examples now use `cleisson-labs/kitmux`. Published v0.5.0 and v0.6.0
 assets predate the attestation-enabled workflow and provide `SHA256SUMS`.
 
+CI uses immutable organization workflows for security, documentation, C static
+analysis, and CodeQL. Kitmux keeps its compatibility and sanitizer matrix, records
+gcovr coverage on Linux x86_64, and validates the expected job outcomes before
+reporting `ci-ok`. Release builds retain the four packaged-binary smoke tests and
+reuse the organization asset verifier, attestation, and publisher.
+
 ## Implementation boundaries
 
 - `catalog.c`, `policy.c`, and `groups*.c` own catalog validation, persistence,

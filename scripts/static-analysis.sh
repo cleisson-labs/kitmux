@@ -4,17 +4,18 @@
 # (src/adapters_toml_vendor.c and its header) keeps its upstream form.
 set -eu
 cppcheck=${CPPCHECK:-cppcheck}
-command -v "$cppcheck" > /dev/null 2>&1 || {
-    echo "static-analysis.sh: $cppcheck not found; install cppcheck first" >&2; exit 1;
+command -v "$cppcheck" >/dev/null 2>&1 || {
+  echo "static-analysis.sh: $cppcheck not found; install cppcheck first" >&2
+  exit 1
 }
-root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
 work=$(mktemp -d "${TMPDIR:-/tmp}/kitmux-analysis.XXXXXX")
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 
 # Library headers are not given to cppcheck, so describe json-c's iteration
 # macro (its strict-ANSI definition); otherwise loops abort as unknownMacro.
-cat > "$work/json-c-macros.h" <<'EOF'
+cat >"$work/json-c-macros.h" <<'EOF'
 #define json_object_object_foreach(obj, key, val) \
     char *key = NULL; \
     struct json_object *val = NULL; \
@@ -29,13 +30,13 @@ EOF
 
 set --
 for source in src/*.c; do
-    [ "$source" = src/adapters_toml_vendor.c ] || set -- "$@" "$source"
+  [ "$source" = src/adapters_toml_vendor.c ] || set -- "$@" "$source"
 done
 
 "$cppcheck" --version
 # C17 adds no language features over C11, which every cppcheck release accepts.
 "$cppcheck" --quiet --error-exitcode=1 --enable=warning \
-    --language=c --std=c11 --platform=unix64 --library=posix \
-    --include="$work/json-c-macros.h" -I include \
-    --suppress='*:*adapters_toml_vendor.h' \
-    --template=gcc "$@"
+  --language=c --std=c11 --platform=unix64 --library=posix \
+  --include="$work/json-c-macros.h" -I include \
+  --suppress='*:*adapters_toml_vendor.h' \
+  --template=gcc "$@"

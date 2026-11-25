@@ -11,11 +11,10 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/cleisson-labs/kitmux/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/cleisson-labs/kitmux/ci.yml?branch=main&amp;label=ci&amp;labelColor=111111"></a>
-  <a href="https://github.com/cleisson-labs/kitmux/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/cleisson-labs/kitmux?label=release&amp;labelColor=111111&amp;color=ff0000"></a>
-  <img alt="Written in C17" src="https://img.shields.io/badge/C17-portable-5f5f5f?labelColor=111111">
-  <img alt="macOS and Linux, arm64 and x86_64" src="https://img.shields.io/badge/macOS%20%7C%20Linux-arm64%20%7C%20x86__64-5f5f5f?labelColor=111111">
-  <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-5f5f5f?labelColor=111111"></a>
+  <a href="https://github.com/cleisson-labs/kitmux/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/cleisson-labs/kitmux/actions/workflows/ci.yml/badge.svg?branch=main"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/cleisson-labs/kitmux"></a>
+  <a href="https://github.com/cleisson-labs/kitmux/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/cleisson-labs/kitmux"></a>
+  <a href="docs/GUIDE.md#continuous-integration-and-release-provenance"><img alt="Coverage report" src="https://img.shields.io/badge/coverage-report-blue"></a>
 </p>
 
 <p align="center">

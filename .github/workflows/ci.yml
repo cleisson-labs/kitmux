@@ -2,6 +2,7 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -21,74 +22,84 @@ jobs:
       contents: read
     outputs:
       code: ${{ steps.filter.outputs.code }}
+      release: ${{ steps.filter.outputs.release }}
     steps:
-      - name: Check out pull request merge commit
-        if: github.event_name == 'pull_request'
+      - name: Check out comparison history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 2
+          fetch-depth: 0
       - name: Classify changed paths
         id: filter
         env:
           EVENT_NAME: ${{ github.event_name }}
+          PREVIOUS: ${{ github.event.before }}
         run: |
-          # Only pull requests may skip code jobs; pushes and manual runs always test.
-          code=true
-          if [ "$EVENT_NAME" = pull_request ]; then
-            git diff --name-only HEAD^1 HEAD > "$RUNNER_TEMP/changed-paths"
-            if [ -s "$RUNNER_TEMP/changed-paths" ]; then
-              code=false
-              while IFS= read -r path; do
-                case $path in
-                  # Tests execute the README installer block and package THIRD_PARTY.md.
-                  README.md|THIRD_PARTY.md) code=true ;;
-                  docs/*|*.md) ;;
-                  *) code=true ;;
-                esac
-              done < "$RUNNER_TEMP/changed-paths"
-            fi
+          base=$PREVIOUS
+          if [[ "$EVENT_NAME" == pull_request ]]; then base=HEAD^1; fi
+          code=true release=true
+          if [[ -n "$base" ]] && git cat-file -e "$base^{commit}"; then
+            git diff --no-renames --name-only -z "$base" HEAD > "$RUNNER_TEMP/changed-paths"
+            release=false
+            if [[ "$EVENT_NAME" == pull_request && -s "$RUNNER_TEMP/changed-paths" ]]; then code=false; fi
+            while IFS= read -r -d '' path; do
+              case $path in
+                .github/workflows/ci.yml|.github/workflows/release*.yml|Makefile|include/kitmux.h|LICENSE|THIRD_PARTY.md|scripts/*release*|scripts/check-leaks.sh|tests/test_release_*) release=true ;;
+              esac
+              case $path in
+                docs/*|CONTRIBUTING.md|SECURITY.md|AGENTS.md) ;;
+                *) code=true ;;
+              esac
+            done < "$RUNNER_TEMP/changed-paths"
           fi
-          echo "Code jobs required: $code"
           echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "release=$release" >> "$GITHUB_OUTPUT"
 
-  workflow-lint:
-    name: Workflow lint
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
+  release-build:
+    needs: changes
+    if: needs.changes.outputs.release == 'true'
     permissions:
       contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: actionlint
-        uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 # 1.7.12
-        with:
-          args: -color
-      - name: zizmor
-        uses: zizmorcore/zizmor-action@1b4550e929643b8b26a62303c6bd64814271a4f1 # v0.9.2
-        with:
-          version: 1.33.1
-          advanced-security: false
-          annotations: true
+    uses: $/.github/workflows/release-build.yml
+    with:
+      native-tests: false # The test matrix below verifies the same checkout.
+
+  security:
+    permissions:
+      contents: read
+    uses: cleisson-labs/.github/.github/workflows/security.yml@03f53ed9e71b2741c683c448a538f7a7b8aa1786 # v1.0.0
+
+  docs:
+    permissions:
+      contents: read
+    uses: cleisson-labs/.github/.github/workflows/docs.yml@03f53ed9e71b2741c683c448a538f7a7b8aa1786 # v1.0.0
+
+  codeql:
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: c-cpp
+            mode: manual
+            packages: build-essential pkg-config libjson-c-dev libyaml-dev libncurses-dev libssl-dev
+          - language: python
+            mode: none
+            packages: ''
+    uses: cleisson-labs/.github/.github/workflows/codeql.yml@03f53ed9e71b2741c683c448a538f7a7b8aa1786 # v1.0.0
+    with:
+      language: ${{ matrix.language }}
+      build-mode: ${{ matrix.mode }}
+      apt-packages: ${{ matrix.packages }}
 
   static-analysis:
-    name: Static analysis (cppcheck)
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
     permissions:
       contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Install cppcheck
-        run: sudo apt-get update && sudo apt-get install -y cppcheck
-      - name: cppcheck
-        run: make analyze
+    uses: cleisson-labs/.github/.github/workflows/c.yml@03f53ed9e71b2741c683c448a538f7a7b8aa1786 # v1.0.0
 
   test:
     name: Build and tests (${{ matrix.runner }})
@@ -109,6 +120,15 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.13'
+      - name: Lint Python test fixtures
+        if: matrix.runner == 'ubuntu-22.04'
+        uses: astral-sh/ruff-action@278981a28ce3188b1e39527901f38254bf3aac89 # v4.1.0
+        with:
+          version: 0.17.6
+          args: check --select E4,E7,E9,F
+          src: tests
+          download-from-astral-mirror: false
+          checksum: 94b33791f48cd54ab35ad673a443a5c001d3e6d87effeaba9899070b700d45f3
       - name: Install macOS build dependencies
         if: runner.os == 'macOS'
         run: brew install pkgconf json-c libyaml ncurses openssl
@@ -116,7 +136,26 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libjson-c-dev libyaml-dev libncurses-dev libssl-dev
       - name: Test
+        env:
+          CC: ${{ runner.os == 'Linux' && 'gcc' || 'clang' }}
+          CFLAGS: ${{ matrix.runner == 'ubuntu-22.04' && '--coverage' || '' }}
+          LDFLAGS: ${{ matrix.runner == 'ubuntu-22.04' && '--coverage' || '' }}
         run: make -j2 test
+      - name: Report Linux coverage
+        if: matrix.runner == 'ubuntu-22.04'
+        shell: bash
+        run: |
+          sudo apt-get install --no-install-recommends -y 'gcovr=5.0-*'
+          mkdir -p build/coverage
+          gcovr --root . --filter src/ --html-details build/coverage/index.html \
+            --json-summary build/coverage/summary.json --print-summary | tee -a "$GITHUB_STEP_SUMMARY"
+          jq -e '.line_total > 0 and .line_covered > 0' build/coverage/summary.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: matrix.runner == 'ubuntu-22.04'
+        with:
+          name: kitmux-linux-coverage
+          path: build/coverage
+          if-no-files-found: error
       - name: Address and undefined behavior sanitizers
         env:
           ASAN_OPTIONS: ${{ runner.os == 'Linux' && runner.arch == 'ARM64' && 'detect_leaks=0' || '' }}
@@ -125,21 +164,28 @@ jobs:
         if: runner.os == 'Linux' && runner.arch == 'ARM64'
         run: sh scripts/check-leaks.sh "$PWD/build-sanitize/kitmux"
 
-  # Branch protection requires only this job. Skipped jobs (docs-only pull
-  # requests) pass; any failed or cancelled job fails the gate.
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [changes, workflow-lint, static-analysis, test]
+    needs: [changes, release-build, security, docs, codeql, static-analysis, test]
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 2
     permissions: {}
     steps:
-      - name: Check required job results
+      - name: Verify each expected result
         env:
-          RESULTS: ${{ join(needs.*.result, ' ') }}
+          RESULTS: ${{ toJSON(needs) }}
         run: |
-          echo "Required job results: $RESULTS"
-          case " $RESULTS " in
-            *" failure "*|*" cancelled "*) echo 'A required job failed or was cancelled' >&2; exit 1 ;;
-          esac
+          jq -e '
+            .changes.outputs.code as $code |
+            .changes.outputs.release as $release |
+            ($code == "true" or $code == "false") and
+            ($release == "true" or $release == "false") and
+            ($release == "false" or $code == "true") and
+            all(to_entries[];
+              if .key == "static-analysis" or .key == "test"
+              then .value.result == (if $code == "true" then "success" else "skipped" end)
+              elif .key == "release-build" and $release == "false"
+              then .value.result == "skipped"
+              else .value.result == "success" end)
+          ' <<< "$RESULTS"

@@ -15,12 +15,38 @@ int rt_changed(Rt *rt) {
     return status;
 }
 
+#ifdef __APPLE__
+#define RT_MODIFIED(st) ((st).st_mtimespec)
+#define RT_CHANGED(st) ((st).st_ctimespec)
+#else
+#define RT_MODIFIED(st) ((st).st_mtim)
+#define RT_CHANGED(st) ((st).st_ctim)
+#endif
+
+/* Atomic replacement changes the inode, but inodes can be reused and in-place
+ * writes keep them, so size and nanosecond timestamps are compared as well. */
+static RtStamp catalog_stamp(const char *path) {
+    struct stat st;
+    if (stat(path, &st)) return (RtStamp){.exists = false};
+    return (RtStamp){.exists = true, .dev = st.st_dev, .inode = st.st_ino, .size = st.st_size,
+                     .modified = RT_MODIFIED(st), .changed = RT_CHANGED(st)};
+}
+
+static bool same_time(struct timespec a, struct timespec b) {
+    return a.tv_sec == b.tv_sec && a.tv_nsec == b.tv_nsec;
+}
+
+static bool same_stamp(RtStamp a, RtStamp b) {
+    return a.exists && b.exists && a.dev == b.dev && a.inode == b.inode && a.size == b.size &&
+           same_time(a.modified, b.modified) && same_time(a.changed, b.changed);
+}
+
 int rt_refresh(Rt *rt, bool force) {
     char path[PATH_MAX];
-    struct stat st;
     if (km_path(rt->km, path, sizeof(path), "%s/catalog.json", rt->km->config)) return -1;
-    bool exists = stat(path, &st) == 0;
-    if (!force && exists && st.st_dev == rt->catalog_dev && st.st_ino == rt->catalog_inode) return 0;
+    RtStamp stamp = catalog_stamp(path);
+    bool exists = stamp.exists;
+    if (!force && same_stamp(stamp, rt->catalog)) return 0;
     bool valid = exists && km_load(rt->km) == 0;
     json_object *server = valid ? km_get(km_get(rt->km->catalog, "mcps"), rt->id) : NULL;
     json_object *definition = server ? km_mcp_execution(server, rt->agent) : json_object_new_object();
@@ -37,8 +63,7 @@ int rt_refresh(Rt *rt, bool force) {
         if (rt_changed(rt)) { json_object_put(definition); return -1; }
     }
     json_object_put(definition);
-    rt->catalog_dev = exists ? st.st_dev : 0;
-    rt->catalog_inode = exists ? st.st_ino : 0;
+    rt->catalog = stamp;
     return 0;
 }
 

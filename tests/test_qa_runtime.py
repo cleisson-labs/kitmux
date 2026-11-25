@@ -185,6 +185,16 @@ class QaRuntimeTests(unittest.TestCase):
         self.close_bridge()
         self.assertTrue(marker.exists())
 
+    # 7: policy observation
+    def test_in_place_catalog_edit_is_observed(self):
+        self.bridge()
+        self.assertIn("result", self.call())
+        self.config["mcps"]["stub"]["agents"]["codex"] = "off"
+        with self.catalog.open("r+") as stream:
+            stream.truncate(0)
+            stream.write(json.dumps(self.config))
+        self.assertEqual(self.packet(3)["method"], "notifications/tools/list_changed")
+
     # 10: tolerant framing and early ping
     def test_upstream_noise_lines_are_skipped(self):
         self.environment(KM_QA_NOISE=1)

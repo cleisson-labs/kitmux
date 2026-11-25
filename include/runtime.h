@@ -2,6 +2,7 @@
 #define KITMUX_RUNTIME_H
 #include "kitmux.h"
 #include <sys/types.h>
+#include <time.h>
 
 #define RT_MAX_LINE (1024u * 1024u)
 #define RT_MAX_PENDING 64
@@ -20,6 +21,14 @@ typedef struct {
     unsigned noise;
 } RtReader;
 typedef struct {
+    bool exists;
+    dev_t dev;
+    ino_t inode;
+    off_t size;
+    struct timespec modified;
+    struct timespec changed;
+} RtStamp;
+typedef struct {
     Km *km;
     const char *id;
     const char *agent;
@@ -37,8 +46,7 @@ typedef struct {
     json_object *pending;
     RtReader downstream;
     RtReader upstream;
-    dev_t catalog_dev;
-    ino_t catalog_inode;
+    RtStamp catalog;
 } Rt;
 
 double rt_clock(void);

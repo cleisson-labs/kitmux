@@ -171,6 +171,18 @@ class QaTerminalTests(TerminalTestCase):
         terminal.wait_text("Skills change with u")
         self.quit(terminal)
 
+    def test_update_of_current_skill_reports_it_without_review(self):
+        package = self.home / "notes"
+        package.mkdir()
+        (package / "SKILL.md").write_text("---\nname: notes\ndescription: Notes\n---\nTake notes.\n")
+        self.run_cli("skill", "add", str(package))
+        terminal = self.start()
+        terminal.wait_text("1 MCPs")
+        terminal.send(b"2ju")
+        terminal.wait_text("already current")
+        self.assertNotIn(b"Review skill update", terminal.output)
+        self.quit(terminal)
+
 
 if __name__ == "__main__":
     unittest.main()

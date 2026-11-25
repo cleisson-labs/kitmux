@@ -293,7 +293,9 @@ static void skill_action(KmUi *ui, bool rollback) {
     char *args[] = {"skill", rollback ? "rollback" : "update", id, "--preview"};
     if (rollback) { if (ui_confirm(ui, "Restore this skill's previous pinned revision?")) ui_command(ui, 3, args); }
     else {
-        if (!ui_command(ui, 4, args) && ui_review(ui, "Review skill update")) { args[3] = "--apply"; ui_command(ui, 4, args); }
+        /* A current skill has nothing to apply; report it instead of offering a no-op review. */
+        if (!ui_command(ui, 4, args) && !strstr(ui->output, " is already current") &&
+            ui_review(ui, "Review skill update")) { args[3] = "--apply"; ui_command(ui, 4, args); }
     }
     free(id); ui_rebuild(ui);
 }

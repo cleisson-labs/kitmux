@@ -274,6 +274,8 @@ static void warn_unusable(Km *km, const char *id, const char *only) {
     }
 }
 
+void km_subagent_warn_assignments(Km *km, const char *id) { warn_unusable(km, id, NULL); }
+
 int km_subagent_command(Km *km, int argc, char **argv) {
     if (!argc || !strcmp(argv[0], "list")) {
         if (argc > 2 || (argc == 2 && strcmp(argv[1], "--json"))) return km_error(km, "Usage: subagent list [--json]");

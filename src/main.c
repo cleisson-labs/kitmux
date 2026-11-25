@@ -40,7 +40,8 @@ void km_help(FILE *out) {
         "  status [--json]    doctor    --version    --help\n\n"
         "Use sync --preview/--apply to adopt native configurations initially.\n"
         "Later catalog changes automatically sync clients already adopted.\n"
-        "Native changes may need an agent reload. Managed bridges observe policy.\n",
+        "Native changes may need an agent reload. Managed bridges apply policy live;\n"
+        "clients that ignore tool-list notifications (Codex) show changes after a restart.\n",
         KM_VERSION);
 }
 

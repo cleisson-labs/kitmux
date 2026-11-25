@@ -21,6 +21,8 @@ int km_subagent_check(Km *km, const char *id, json_object *resource, size_t *jou
 bool km_subagent_unusable_assignment(Km *km, const char *id, const char *client);
 /* Existing ID equal to id except for letter case, or NULL. */
 const char *km_subagent_case_twin(Km *km, const char *id);
+/* Prints a stderr warning for each client assigned to id without a usable variant. */
+void km_subagent_warn_assignments(Km *km, const char *id);
 
 /* Codec internals. Parsed documents contain description, instructions, optional
  * name and disabled. Editors change only the requested common fields.

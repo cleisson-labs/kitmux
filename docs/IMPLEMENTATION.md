@@ -131,6 +131,11 @@ fix below began with a failing regression test in `tests/test_qa_*.py`.
   Esc responds immediately, cancelled searches keep the previous filter, long IDs
   widen with the terminal, and doctor output opens in a viewer.
 
+Local qualification on macOS arm64 at the final revision: `make -j8 test` ran 367
+cases (361 passed, 6 opt-in native cases skipped), and `make -j8 sanitize` ran the
+same 367 cases with ASan/UBSan and no sanitizer reports. Linux targets are covered by
+CI on the pull request.
+
 Remaining limits: Codex only logs `tools/list_changed`, so a running Codex session
 shows managed tool changes after a restart. Bridge retries happen on the next
 client request or reconnect, with no background timer. Clients that were made

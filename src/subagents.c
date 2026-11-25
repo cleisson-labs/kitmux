@@ -27,8 +27,9 @@ static int options(Km *km, int argc, char **argv, SubagentOptions *out) {
         *field = argv[++i];
     }
     if (out->format && strcmp(out->format, "common") && strcmp(out->format, "codex") &&
-        strcmp(out->format, "claude") && strcmp(out->format, "opencode") && strcmp(out->format, "opencode-json"))
-        return km_error(km, "Use subagent format common, codex, claude, opencode, or opencode-json");
+        strcmp(out->format, "claude") && strcmp(out->format, "opencode") && strcmp(out->format, "opencode-json") &&
+        strcmp(out->format, "antigravity"))
+        return km_error(km, "Use subagent format common, codex, claude, opencode, opencode-json, or antigravity");
     if (out->format && !out->path) return km_error(km, "--format requires --from FILE");
     return 0;
 }

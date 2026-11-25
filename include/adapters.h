@@ -61,6 +61,7 @@ int ad_sync_subagents(AdRun *run, const char *agent);
 int ad_restore_subagents(AdRun *run, const char *agent);
 int ad_subagent_origins_valid(Km *km, json_object *resource, const char *id);
 bool ad_subagent_path_valid(Km *km, const char *path, const char *agent, const char *id);
+int ad_subagent_folder_path(Km *km, char *path, const char *id);
 int ad_subagent_parent_safe(Km *km, const char *path);
 int ad_subagent_flat_discovery(Km *km, const char *agent);
 int ad_subagent_change(AdRun *run, const char *agent, const char *path,

@@ -134,8 +134,19 @@ static int import_entry(AdRun *run, const char *root, const char *name, const ch
     return import_file(run,agent,id,path);
 }
 
+/* Antigravity folder definitions live at <root>/<id>/agent.md. */
+static int import_folder(AdRun *run, const char *root, const char *name) {
+    char path[PATH_MAX]; struct stat st;
+    if (km_path(run->km,path,sizeof(path),"%s/%s",root,name)<0) return -1;
+    if (name[0]=='.' || lstat(path,&st)<0 || !S_ISDIR(st.st_mode)) return 0;
+    if (!km_valid_id(name) || ad_subagent_folder_path(run->km,path,name)<0 || lstat(path,&st)<0) return 0;
+    if (!S_ISREG(st.st_mode)) { km_error(run->km,"agent.md must be a regular file"); return skip(run,path,NULL); }
+    return import_file(run,"antigravity",name,path);
+}
+
 static int scan_directory(AdRun *run, const char *agent) {
-    const char *relative=!strcmp(agent,"codex") ? ".codex/agents" : !strcmp(agent,"claude") ? ".claude/agents" : ".config/opencode/agents";
+    const char *relative=!strcmp(agent,"codex") ? ".codex/agents" : !strcmp(agent,"claude") ? ".claude/agents" :
+                         !strcmp(agent,"antigravity") ? ".gemini/config/agents" : ".config/opencode/agents";
     const char *suffix=!strcmp(agent,"codex") ? ".toml" : ".md";
     char root[PATH_MAX], sample[PATH_MAX]; struct stat st;
     if (km_path(run->km,root,sizeof(root),"%s/%s",run->km->home,relative)<0 ||
@@ -145,7 +156,10 @@ static int scan_directory(AdRun *run, const char *agent) {
     DIR *dir=opendir(root);
     if (!dir) return km_error(run->km,"Cannot read native subagent discovery directory %s",root);
     int result=0; struct dirent *entry;
-    while (!result && (entry=readdir(dir))) result=import_entry(run,root,entry->d_name,suffix,agent);
+    while (!result && (entry=readdir(dir))) {
+        result=import_entry(run,root,entry->d_name,suffix,agent);
+        if (!result && !strcmp(agent,"antigravity")) result=import_folder(run,root,entry->d_name);
+    }
     closedir(dir); return result;
 }
 

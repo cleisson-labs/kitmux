@@ -148,7 +148,7 @@ static void requirements(Frontmatter *front, json_object *doc) {
 }
 
 static int native_flags(Km *km, Frontmatter *front, json_object *doc, const char *client) {
-    if (!strcmp(client,"claude")) { requirements(front,doc); return 0; }
+    if (!strcmp(client,"claude") || !strcmp(client,"antigravity")) { requirements(front,doc); return 0; }
     yaml_node_t *mode=field(front,"mode"), *disabled=field(front,"disabled");
     if (!scalar(mode) || strcmp((const char *)mode->data.scalar.value,"subagent"))
         return km_error(km,"OpenCode custom profile must use mode: subagent");
@@ -165,7 +165,7 @@ json_object *km_subagent_markdown(Km *km, const char *text, const char *client) 
     json_object *doc=json_object_new_object();
     int result=unique_keys(km,&front);
     if (!result) result=required_string(km,&front,doc,"description");
-    if (!result && !strcmp(client,"claude")) result=required_string(km,&front,doc,"name");
+    if (!result && strcmp(client,"opencode")) result=required_string(km,&front,doc,"name");
     if (!result && !text[front.body]) result=km_error(km,"subagent instructions must not be empty");
     if (!result) result=native_flags(km,&front,doc,client);
     if (!result) json_object_object_add(doc,"instructions",json_object_new_string(text+front.body));

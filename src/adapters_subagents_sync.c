@@ -6,7 +6,8 @@
 #include <sys/stat.h>
 
 static int default_path(Km *km, char *path, const char *agent, const char *id) {
-    const char *root=!strcmp(agent,"codex") ? ".codex/agents" : !strcmp(agent,"claude") ? ".claude/agents" : ".config/opencode/agents";
+    const char *root=!strcmp(agent,"codex") ? ".codex/agents" : !strcmp(agent,"claude") ? ".claude/agents" :
+                     !strcmp(agent,"antigravity") ? ".gemini/config/agents" : ".config/opencode/agents";
     return km_path(km,path,PATH_MAX,"%s/%s/%s.%s",km->home,root,id,!strcmp(agent,"codex") ? "toml" : "md");
 }
 
@@ -59,6 +60,23 @@ static int opencode_collision(AdRun *run, const char *id, bool json_origin) {
     return collision ? km_error(run->km,"Unowned OpenCode subagent collision for %s in %s (%s); adopt it with `kitmux subagent import --from opencode --apply` or remove one definition",id,file->path,key) : 0;
 }
 
+/* An imported definition stays where it was found; others use the flat layout. */
+static int target_path(AdRun *run, char *path, const char *agent, const char *id, json_object *origin) {
+    const char *found=origin && !km_string(origin,"key") ? km_string(origin,"path") : NULL;
+    if (found && ad_subagent_path_valid(run->km,found,agent,id)) return km_path(run->km,path,PATH_MAX,"%s",found);
+    return default_path(run->km,path,agent,id);
+}
+
+/* Antigravity reads both <id>.md and <id>/agent.md; never create a second one. */
+static int layout_collision(AdRun *run, const char *id, const char *target) {
+    char flat[PATH_MAX], folder[PATH_MAX]; struct stat st;
+    if (default_path(run->km,flat,"antigravity",id)<0 || ad_subagent_folder_path(run->km,folder,id)<0) return -1;
+    const char *other=strcmp(target,flat) ? flat : folder;
+    if (km_get(km_get(run->state,"subagent_files"),other) || lstat(other,&st)<0) return 0;
+    return km_error(run->km,"Antigravity subagent %s already has a native definition at %s; import it with "
+                    "`kitmux subagent import --from antigravity --apply` or remove one definition, then retry",id,other);
+}
+
 /* Imported OpenCode Markdown keeps its native disabled form instead of being
  * deleted; Kitmux-created projections are removed when off. */
 static char *desired_text(AdRun *run, json_object *resource, const char *id, const char *agent,
@@ -86,7 +104,8 @@ static int sync_resource(AdRun *run, const char *agent, const char *id, json_obj
     if (json_target) return sync_json(run,resource,id,origin,enabled);
     if (!strcmp(agent,"opencode") && (enabled || origin) && opencode_collision(run,id,false)<0) return -1;
     char path[PATH_MAX];
-    if (default_path(run->km,path,agent,id)<0) return -1;
+    if (target_path(run,path,agent,id,origin)<0) return -1;
+    if (!strcmp(agent,"antigravity") && (enabled || origin) && layout_collision(run,id,path)<0) return -1;
     json_object *record=km_get(km_get(run->state,"subagent_files"),path);
     if (!enabled && !record) return 0;
     bool absent=false;

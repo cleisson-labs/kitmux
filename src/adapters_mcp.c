@@ -117,7 +117,14 @@ static const char *original_raw(AdRun *run, AdFile *file, const char *key) {
 }
 
 static char *render_json(Km *km, json_object *native, const char *base) {
-    char *result=strdup(base ? base : "{}");
+    if (!base) {
+        const char *pretty=json_object_to_json_string_ext(native,JSON_C_TO_STRING_PRETTY|
+                                                          JSON_C_TO_STRING_SPACED|JSON_C_TO_STRING_NOSLASHESCAPE);
+        char *copy=strdup(pretty);
+        if (!copy) km_error(km,"out of memory");
+        return copy;
+    }
+    char *result=strdup(base);
     if (!result) { km_error(km,"out of memory"); return NULL; }
     json_object *existing_doc=ad_parse(km,result);
     if (!existing_doc) { free(result); return NULL; }
@@ -130,7 +137,7 @@ static char *render_json(Km *km, json_object *native, const char *base) {
     json_object_put(existing_doc);
     json_object_object_foreach(native,key,value) {
         char *existing=ad_json_raw(km,result,key);
-        const char *desired=json_object_to_json_string_ext(value,JSON_C_TO_STRING_PLAIN);
+        const char *desired=json_object_to_json_string_ext(value,JSON_C_TO_STRING_PLAIN|JSON_C_TO_STRING_NOSLASHESCAPE);
         bool same=ad_same(km,existing,desired,false); free(existing);
         if (!same && ad_json_edit(km,&result,key,desired)<0) { free(result); return NULL; }
     }
@@ -159,7 +166,7 @@ static int sync_one(AdRun *run, AdFile *file, const char *agent, const char *id,
         free(current); json_object_put(native); return -1;
     }
     const char *original=original_raw(run,file,key);
-    const char *base=original ? (current ? current : original) : NULL;
+    const char *base=current ? current : original;
     char *desired=NULL;
     if (strcmp(agent,"claude") || enabled || managed)
         desired=file->toml ? ad_toml_render(run->km,native,id,base) : render_json(run->km,native,base);

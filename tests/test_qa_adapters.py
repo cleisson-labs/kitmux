@@ -51,7 +51,7 @@ OPENCODE = """{
 
 
 def jsonc(text):
-    text = re.sub(r"//[^\n]*", "", text)
+    text = re.sub(r'("(?:\\.|[^"\\])*")|//[^\n]*', lambda match: match.group(1) or "", text)
     return json.loads(re.sub(r",(\s*[}\]])", r"\1", text))
 
 

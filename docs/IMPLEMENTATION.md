@@ -133,8 +133,11 @@ fix below began with a failing regression test in `tests/test_qa_*.py`.
 
 Local qualification on macOS arm64 at the final revision: `make -j8 test` ran 367
 cases (361 passed, 6 opt-in native cases skipped), and `make -j8 sanitize` ran the
-same 367 cases with ASan/UBSan and no sanitizer reports. Linux targets are covered by
-CI on the pull request.
+same 367 cases with ASan/UBSan and no sanitizer reports. Hosted CI at revision
+`21f7a5f` passed the ordinary and ASan/UBSan suites on macOS 15 arm64/x86_64 and
+Ubuntu 22.04 arm64/x86_64, including the ARM64 leak checks. An earlier revision failed
+only on macOS 15: it refuses to rename a directory without write permission, so
+read-only skill packages are now protected after they are published.
 
 Remaining limits: Codex only logs `tools/list_changed`, so a running Codex session
 shows managed tool changes after a restart. Bridge retries happen on the next

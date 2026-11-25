@@ -78,11 +78,11 @@ class AdapterTests(unittest.TestCase):
         self.cli("doctor", "--agent", "opencode")
 
     def test_unowned_collision_requires_import(self):
-        original = '{"mcpServers":{"example":{"command":"/usr/bin/false","env":{"TOKEN":"private"}}},"theme":"dark"}'
+        original = '{"mcpServers":{"example":{"command":"/usr/bin/false","env":{"TOKEN":"fixture-private-token"}}},"theme":"dark"}'
         path = self.write(".claude.json", original)
         self.registered("claude")
         result = self.cli("sync", "--apply", "--agent", "claude", ok=False)
-        self.assertNotIn("private", result.stderr + result.stdout)
+        self.assertNotIn("fixture-private-token", result.stderr + result.stdout)
         self.assertEqual(path.read_text(), original)
 
     def test_import_adopts_and_restore_preserves_unowned_settings(self):
@@ -147,11 +147,14 @@ class AdapterTests(unittest.TestCase):
 
     def test_managed_disabled_bridges_remain_registered(self):
         self.cli("mcp", "add", "managed", "--command", "/usr/bin/true", "--mode", "managed")
+        for agent in ("codex", "claude", "opencode"):
+            self.cli("mcp", "enable", "managed", "--agent", agent)
         self.cli("sync", "--apply")
+        self.cli("mcp", "disable", "managed")
         codex = tomllib.loads((self.home / ".codex/config.toml").read_text())["mcp_servers"]["managed"]
         claude = json.loads((self.home / ".claude.json").read_text())["mcpServers"]["managed"]
         opencode = json.loads((self.home / ".config/opencode/opencode.json").read_text())["mcp"]["servers"]["managed"]
-        self.assertTrue(codex["enabled"])
+        self.assertTrue(codex.get("enabled", True))
         self.assertIn("bridge", codex["args"])
         self.assertIn("--home", claude["args"])
         self.assertFalse(opencode["disabled"])

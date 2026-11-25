@@ -57,20 +57,37 @@ static int spawn_child(Rt *rt) {
     return 0;
 }
 
-static void stop_child(Rt *rt) {
-    if (rt->child <= 0) return;
-    /* Keep the leader unreaped while signalling its group. Its zombie reserves
-     * the PID, so an exited leader cannot make us target a reused process ID. */
+/* waitid(WNOWAIT) leaves an exited leader unreaped. Its zombie keeps the PID
+ * and process group reserved, so signals never reach a reused process ID.
+ * Returns 1 when the leader exited, 0 while it runs, -1 if it is not our child. */
+static int leader_state(pid_t pid) {
     siginfo_t observed = {0};
-    int waiting;
-    do { waiting = waitid(P_PID, (id_t)rt->child, &observed, WEXITED | WNOHANG | WNOWAIT); }
-    while (waiting < 0 && errno == EINTR);
-    if (waiting == 0) {
+    int status;
+    do { status = waitid(P_PID, (id_t)pid, &observed, WEXITED | WNOHANG | WNOWAIT); }
+    while (status < 0 && errno == EINTR);
+    return status < 0 ? -1 : observed.si_pid == pid;
+}
+
+static void pause_briefly(long nanoseconds) {
+    struct timespec pause = {0, nanoseconds};
+    nanosleep(&pause, NULL);
+}
+
+static void await_leader(pid_t pid, double seconds) {
+    double until = rt_clock() + seconds;
+    while (!leader_state(pid) && rt_clock() < until) pause_briefly(10000000);
+}
+
+/* Closed stdin is the MCP stdio shutdown request; signals follow only if the
+ * leader does not exit within the grace period. */
+static void stop_child(Rt *rt, bool closed_input) {
+    if (rt->child <= 0) return;
+    if (leader_state(rt->child) >= 0) {
+        if (closed_input) await_leader(rt->child, RT_EOF_GRACE_SECONDS);
+        bool exited = leader_state(rt->child) != 0;
         kill(-rt->child, SIGTERM);
-        double until = rt_clock() + .3;
-        while (rt_clock() < until) {
-            struct timespec pause = {0, 10000000}; nanosleep(&pause, NULL);
-        }
+        if (exited) pause_briefly(50000000);
+        else await_leader(rt->child, RT_TERM_GRACE_SECONDS);
         kill(-rt->child, SIGKILL);
         while (waitpid(rt->child, NULL, 0) < 0 && errno == EINTR) {}
     }
@@ -78,13 +95,16 @@ static void stop_child(Rt *rt) {
 }
 
 void rt_stop(Rt *rt, const char *message) {
-    if (rt->upstream_in >= 0) close(rt->upstream_in);
+    bool closed_input = rt->upstream_in >= 0;
+    if (closed_input) close(rt->upstream_in);
+    rt->upstream_in = -1;
+    /* Client backpressure must never delay stopping the owned process group.
+     * The output pipe stays open until then so final writes cannot raise SIGPIPE. */
+    stop_child(rt, closed_input);
     if (rt->upstream_out >= 0) close(rt->upstream_out);
-    rt->upstream_in = rt->upstream_out = -1;
+    rt->upstream_out = -1;
     rt->upstream = (RtReader){.bytes = rt->upstream.bytes};
     rt->upstream_protocol[0] = '\0';
-    /* Client backpressure must never delay stopping the owned process group. */
-    stop_child(rt);
     if (message) rt_fail_pending(rt, message);
 }
 

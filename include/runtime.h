@@ -7,6 +7,8 @@
 #define RT_MAX_PENDING 64
 #define RT_JSON_DEPTH 512
 #define RT_MAX_NOISE 64
+#define RT_EOF_GRACE_SECONDS 1.0
+#define RT_TERM_GRACE_SECONDS 0.3
 
 /* The current line stays valid until the next rt_next/rt_read on its reader. */
 typedef struct {

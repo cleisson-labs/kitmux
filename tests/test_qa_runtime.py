@@ -176,6 +176,15 @@ class QaRuntimeTests(unittest.TestCase):
         self.assertEqual(response["id"], "deep")
         self.assertIn("error", response)
 
+    # 6: graceful upstream stop
+    def test_upstream_receives_eof_before_termination(self):
+        marker = self.home / "eof"
+        self.environment(KM_QA_EOF_MARKER=marker)
+        self.bridge()
+        self.assertIn("result", self.call())
+        self.close_bridge()
+        self.assertTrue(marker.exists())
+
     # 10: tolerant framing and early ping
     def test_upstream_noise_lines_are_skipped(self):
         self.environment(KM_QA_NOISE=1)

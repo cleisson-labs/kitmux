@@ -1,7 +1,6 @@
 #include "runtime.h"
 #include <errno.h>
 #include <fcntl.h>
-#include <poll.h>
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
@@ -105,36 +104,10 @@ void rt_stop(Rt *rt, const char *message) {
     rt->upstream_out = -1;
     rt->upstream = (RtReader){.bytes = rt->upstream.bytes};
     rt->upstream_protocol[0] = '\0';
-    if (message) rt_fail_pending(rt, message);
-}
-
-static int wait_reply(Rt *rt, const char *id, json_object **answer) {
-    double deadline = rt_clock() + 5;
-    for (int skipped = 0; skipped < 64 && rt_clock() < deadline;) {
-        json_object *packet = NULL;
-        int ready = rt_next(rt->km, &rt->upstream, &packet);
-        if (ready < 0 && rt_noise(&rt->upstream)) continue;
-        if (ready < 0) return -1;
-        if (ready) {
-            rt->upstream.noise = 0;
-            const char *reply_id = km_string(packet, "id");
-            json_object *value = km_get(packet, "id");
-            if (reply_id && strlen(reply_id) == (size_t)json_object_get_string_len(value) && !strcmp(reply_id, id)) {
-                *answer = packet;
-                return 0;
-            }
-            /* Base-protocol pings and rejected optional callbacks must still
-             * get responses while initialization/discovery is in progress. */
-            if (km_string(packet, "method") && rt_server(rt, packet)) { json_object_put(packet); return -1; }
-            json_object_put(packet); skipped++; continue;
-        }
-        struct pollfd fd = {rt->upstream_out, POLLIN, 0};
-        int n = poll(&fd, 1, (int)((deadline - rt_clock()) * 1000));
-        if (n < 0 && errno == EINTR) continue;
-        if (n <= 0 || rt_read(rt->km, rt->upstream_out, &rt->upstream) <= 0)
-            return km_error(rt->km, "MCP handshake failed or timed out; use direct mode for diagnostics");
-    }
-    return km_error(rt->km, "MCP handshake exceeded its message/time limit");
+    rt->starting = rt->discovering = false;
+    if (!message) return;
+    rt_fail_pending(rt, message);
+    rt_reconnect_finish(rt, "failed", message);
 }
 
 static bool nonempty_text(json_object *object, const char *key) {
@@ -149,61 +122,129 @@ static bool tools_capability(json_object *caps) {
     return json_object_is_type(km_get(caps, "tools"), json_type_object);
 }
 
-static json_object *request(const char *method, const char *id) {
+static int send_request(Rt *rt, const char *method, const char *id, json_object *params) {
     json_object *packet = json_object_new_object();
     json_object_object_add(packet, "jsonrpc", json_object_new_string("2.0"));
     json_object_object_add(packet, "method", json_object_new_string(method));
     if (id) json_object_object_add(packet, "id", json_object_new_string(id));
-    return packet;
-}
-
-static int handshake(Rt *rt) {
-    json_object *packet = request("initialize", "kitmux/initialize"), *params = NULL, *answer = NULL;
-    if (json_object_deep_copy(rt->initialize, &params, NULL)) {
-        json_object_put(packet);
-        return km_error(rt->km, "Cannot retain upstream MCP initialization");
-    }
-    json_object_object_add(params, "capabilities", json_object_new_object());
-    json_object_object_add(packet, "params", params);
+    if (params) json_object_object_add(packet, "params", params);
     int status = rt_send(rt->km, rt->upstream_in, packet);
-    json_object_put(packet);
-    if (status || wait_reply(rt, "kitmux/initialize", &answer)) return -1;
-    json_object *result = km_get(answer, "result"), *caps = km_get(result, "capabilities"), *reserved = NULL;
-    const char *version = km_string(result, "protocolVersion");
-    json_object *info = km_get(result, "serverInfo");
-    bool legacy = !json_object_object_get_ex(answer, "method", &reserved) &&
-                  !json_object_object_get_ex(answer, "error", &reserved) &&
-                  nonempty_text(result, "protocolVersion") && rt_legacy_version(version) &&
-                  nonempty_text(info, "name") && nonempty_text(info, "version");
-    bool tools = tools_capability(caps);
-    if (legacy && tools) snprintf(rt->upstream_protocol, sizeof(rt->upstream_protocol), "%s", version);
-    json_object_put(answer);
-    if (!legacy) return km_error(rt->km, "Managed bridge requires a legacy MCP endpoint; use direct mode");
-    if (!tools) return km_error(rt->km, "Managed bridge requires an MCP endpoint with the tools capability; use direct mode");
-    packet = request("notifications/initialized", NULL);
-    status = rt_send(rt->km, rt->upstream_in, packet);
     json_object_put(packet);
     return status;
 }
 
+/* Repeated failures wait 0.5s, 1s, 2s, ... up to 30s before a request may
+ * start the upstream again; the first retry is immediate. */
+static double retry_delay(unsigned failures) {
+    double delay = failures > 1 ? .5 : 0;
+    for (unsigned i = 2; i < failures && delay < RT_RETRY_MAX_SECONDS; i++) delay *= 2;
+    return delay < RT_RETRY_MAX_SECONDS ? delay : RT_RETRY_MAX_SECONDS;
+}
+
+static bool list_pending(Rt *rt) {
+    json_object_object_foreach(rt->pending, key, record) {
+        (void)key;
+        if (json_object_get_boolean(km_get(record, "list")) && !json_object_get_boolean(km_get(record, "cancelled")))
+            return true;
+    }
+    return false;
+}
+
+/* A failure never announces tools/list_changed itself: clients that refresh
+ * on the notification would otherwise restart a crashing upstream forever. */
+void rt_upstream_failed(Rt *rt, const char *message) {
+    if (message != rt->failure) snprintf(rt->failure, sizeof(rt->failure), "%s", message);
+    rt->failures++;
+    rt->retry_at = rt_clock() + retry_delay(rt->failures);
+    if (list_pending(rt)) rt->client_stale = true;
+    rt_stop(rt, rt->failure);
+}
+
+static int start_failed(Rt *rt, const char *message) {
+    rt_upstream_failed(rt, message);
+    return km_error(rt->km, "%s", rt->failure);
+}
+
+/* Starting is asynchronous: requests queue in rt->pending until the upstream
+ * answers initialize, so the bridge keeps serving its client and control socket. */
 int rt_start(Rt *rt) {
     if (rt->child > 0) return 0;
     if (!rt->initialize) return km_error(rt->km, "Waiting for the client's MCP initialization");
-    if (spawn_child(rt)) return -1;
-    if (!handshake(rt)) return 0;
-    rt_stop(rt, NULL);
-    return -1;
+    double wait = rt->retry_at - rt_clock();
+    if (wait > 0) return km_error(rt->km, "MCP upstream failed recently (%s); retrying after %.1fs", rt->failure, wait);
+    if (spawn_child(rt)) return start_failed(rt, rt->km->error);
+    json_object *params = NULL;
+    if (json_object_deep_copy(rt->initialize, &params, NULL)) return start_failed(rt, "Cannot retain upstream MCP initialization");
+    json_object_object_add(params, "capabilities", json_object_new_object());
+    rt->starting = true;
+    rt->start_deadline = rt_clock() + RT_START_SECONDS;
+    if (send_request(rt, "initialize", "kitmux/initialize", params))
+        return start_failed(rt, "MCP upstream exited during startup; use direct mode for diagnostics");
+    return 0;
 }
 
-int rt_discover(Rt *rt) {
-    if (rt_start(rt)) return -1;
-    json_object *packet = request("tools/list", "kitmux/discovery"), *answer = NULL;
-    int status = rt_send(rt->km, rt->upstream_in, packet);
-    json_object_put(packet);
-    if (!status) status = wait_reply(rt, "kitmux/discovery", &answer);
-    if (!status && !json_object_is_type(km_get(km_get(answer, "result"), "tools"), json_type_array))
-        status = km_error(rt->km, "MCP discovery failed after reconnect");
-    json_object_put(answer);
-    if (status) rt_stop(rt, NULL);
-    return status;
+static int flush_queue(Rt *rt, bool *listed) {
+    json_object_object_foreach(rt->pending, key, record) {
+        (void)key;
+        json_object *line = km_get(record, "queued");
+        if (!line) continue;
+        *listed |= json_object_get_boolean(km_get(record, "list"));
+        if (rt_send_line(rt->km, rt->upstream_in, json_object_get_string(line), (size_t)json_object_get_string_len(line)))
+            return -1;
+        json_object_object_del(record, "queued");
+    }
+    return 0;
+}
+
+int rt_upstream_initialized(Rt *rt, json_object *packet) {
+    json_object *result = km_get(packet, "result"), *info = km_get(result, "serverInfo"), *reserved = NULL;
+    const char *version = km_string(result, "protocolVersion");
+    bool legacy = rt_named_id(km_get(packet, "id"), "kitmux/initialize") &&
+                  !json_object_object_get_ex(packet, "error", &reserved) &&
+                  nonempty_text(result, "protocolVersion") && rt_legacy_version(version) &&
+                  nonempty_text(info, "name") && nonempty_text(info, "version");
+    bool tools = tools_capability(km_get(result, "capabilities"));
+    if (!legacy || !tools) {
+        rt_upstream_failed(rt, !legacy ? "Managed bridge requires a legacy MCP endpoint; use direct mode"
+                                       : "Managed bridge requires an MCP endpoint with the tools capability; use direct mode");
+        return 0;
+    }
+    snprintf(rt->upstream_protocol, sizeof(rt->upstream_protocol), "%s", version);
+    rt->starting = false;
+    rt->failures = 0;
+    rt->retry_at = 0;
+    rt->failure[0] = '\0';
+    bool listed = false;
+    if (send_request(rt, "notifications/initialized", NULL, NULL) || flush_queue(rt, &listed) ||
+        (rt->discovering && send_request(rt, "tools/list", "kitmux/discovery", NULL))) {
+        rt_upstream_failed(rt, "MCP disconnected; completion unknown, call not replayed");
+        return 0;
+    }
+    if (rt->discovering || !rt->client_stale) return 0;
+    rt->client_stale = false;
+    /* A queued tools/list already receives the recovered list. */
+    return listed ? 0 : rt_changed(rt);
+}
+
+int rt_discovered(Rt *rt, json_object *packet) {
+    rt->discovering = false;
+    if (!json_object_is_type(km_get(km_get(packet, "result"), "tools"), json_type_array)) {
+        rt_upstream_failed(rt, "MCP discovery failed after reconnect");
+        return 0;
+    }
+    rt->client_stale = false;
+    rt_reconnect_finish(rt, "reconnected", "Upstream discovery succeeded; client tool refresh may still be required");
+    return rt_changed(rt);
+}
+
+void rt_tick(Rt *rt) {
+    double now = rt_clock();
+    if (rt->starting && now >= rt->start_deadline) {
+        char message[128];
+        snprintf(message, sizeof(message), "MCP upstream did not finish initialization within %.0fs; use direct mode for diagnostics",
+                 RT_START_SECONDS);
+        rt_upstream_failed(rt, message);
+    }
+    if (rt->reconnect_waiting && now >= rt->reconnect_deadline)
+        rt_reconnect_finish(rt, "failed", "MCP discovery did not finish before the reconnect deadline");
 }

@@ -57,6 +57,10 @@ int rt_refresh(Rt *rt, bool force) {
     bool changed = rt->enabled != enabled || !rt->execution || !json_object_equal(definition, rt->execution);
     if (changed) {
         rt_stop(rt, "MCP availability or configuration changed; completion unknown, call not replayed");
+        rt->failures = 0;
+        rt->retry_at = 0;
+        rt->failure[0] = '\0';
+        rt->client_stale = false;
         json_object_put(rt->execution);
         rt->execution = json_object_get(definition);
         rt->enabled = enabled;
@@ -112,8 +116,12 @@ static int cancel_request(Rt *rt, json_object *packet) {
     const char *key = json_object_to_json_string_ext(id, JSON_C_TO_STRING_PLAIN);
     json_object *record = km_get(rt->pending, key);
     if (!record || cancelled(record)) return 0;
+    if (km_get(record, "queued")) {
+        json_object_object_del(rt->pending, key); /* It never reached the upstream. */
+        return 0;
+    }
     if (forward_up(rt)) {
-        rt_stop(rt, "MCP disconnected during cancellation; completion unknown, call not replayed");
+        rt_upstream_failed(rt, "MCP disconnected during cancellation; completion unknown, call not replayed");
         return 0;
     }
     /* Keep the ID reserved until completion/reconnect: upstream may still run. */
@@ -157,23 +165,29 @@ static int initialize(Rt *rt, json_object *packet, json_object *id) {
     return status;
 }
 
-static int forward_request(Rt *rt, json_object *packet, json_object *id) {
+static int forward_request(Rt *rt, json_object *packet, json_object *id, bool list) {
     if (json_object_object_length(rt->pending) >= RT_MAX_PENDING)
         return rt_error(rt, id, -32000, "Managed MCP has 64 outstanding requests; wait or reconnect");
     const char *key = json_object_to_json_string_ext(id, JSON_C_TO_STRING_PLAIN);
-    if (km_get(rt->pending, key)) return rt_error(rt, id, -32600, "Duplicate outstanding request ID");
+    if (km_get(rt->pending, key) || (rt->discovering && rt_named_id(id, "kitmux/discovery")))
+        return rt_error(rt, id, -32600, "Duplicate outstanding request ID");
     json_object *meta = km_get(km_get(packet, "params"), "_meta"), *token = NULL;
     bool has_token = meta && json_object_object_get_ex(meta, "progressToken", &token);
     if (has_token && (!rt_identifier(token) || !unique_progress_token(rt, token)))
         return rt_error(rt, id, -32602, "progressToken must be a unique active string or integer");
-    if (rt_start(rt)) return rt_error(rt, id, -32000, rt->km->error);
+    if (rt_start(rt)) {
+        rt->client_stale |= list;
+        return rt_error(rt, id, -32000, rt->km->error);
+    }
     json_object *record = json_object_new_object();
     if (!record) return rt_error(rt, id, -32000, "Cannot track the MCP request");
     json_object_object_add(record, "id", json_object_get(id));
     if (token) json_object_object_add(record, "progressToken", json_object_get(token));
+    if (list) json_object_object_add(record, "list", json_object_new_boolean(true));
+    if (rt->starting)
+        json_object_object_add(record, "queued", json_object_new_string_len(rt->downstream.line, (int)rt->downstream.line_length));
     json_object_object_add(rt->pending, key, record);
-    if (!forward_up(rt)) return 0;
-    rt_stop(rt, "MCP disconnected; completion unknown, call not replayed");
+    if (!rt->starting && forward_up(rt)) rt_upstream_failed(rt, "MCP disconnected; completion unknown, call not replayed");
     return 0;
 }
 
@@ -208,7 +222,7 @@ int rt_client(Rt *rt, json_object *packet) {
         json_object_object_add(empty, "tools", json_object_new_array());
         return rt_result(rt, id, empty);
     }
-    return forward_request(rt, packet, id);
+    return forward_request(rt, packet, id, list);
 }
 
 static int reject_server_request(Rt *rt, json_object *packet, json_object *id) {
@@ -223,9 +237,10 @@ static int reject_server_request(Rt *rt, json_object *packet, json_object *id) {
         json_object_object_add(error, "message", json_object_new_string("Managed bridge does not advertise client callbacks; use direct mode"));
         json_object_object_add(reply, "error", error);
     }
-    int status = rt_send(rt->km, rt->upstream_in, reply);
+    if (rt_send(rt->km, rt->upstream_in, reply))
+        rt_upstream_failed(rt, "MCP disconnected; completion unknown, call not replayed");
     json_object_put(reply);
-    return status;
+    return 0;
 }
 
 static bool finite_number(json_object *value) {
@@ -266,17 +281,19 @@ int rt_server(Rt *rt, json_object *packet) {
     bool has_id = json_object_object_get_ex(packet, "id", &id);
     if (method) {
         if (!request_shape(packet) || (has_id && !rt_identifier(id))) {
-            rt_stop(rt, "Invalid MCP request; completion unknown, call not replayed");
+            rt_upstream_failed(rt, "Invalid MCP request; completion unknown, call not replayed");
             return 0;
         }
         if (has_id) return reject_server_request(rt, packet, id);
         if (!strcmp(method, "notifications/progress")) return forward_progress(rt, packet);
         return !strcmp(method, "notifications/tools/list_changed") ? forward_down(rt) : 0;
     }
+    if (rt->starting) return rt_upstream_initialized(rt, packet);
+    if (rt->discovering && rt_named_id(id, "kitmux/discovery")) return rt_discovered(rt, packet);
     const char *key = has_id ? json_object_to_json_string_ext(id, JSON_C_TO_STRING_PLAIN) : NULL;
     json_object *record = key ? km_get(rt->pending, key) : NULL;
     if (!rt_identifier(id) || !record || !response_shape(packet)) {
-        rt_stop(rt, "Invalid MCP response; completion unknown, call not replayed");
+        rt_upstream_failed(rt, "Invalid MCP response; completion unknown, call not replayed");
         return 0;
     }
     int status = cancelled(record) ? 0 : forward_down(rt);

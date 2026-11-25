@@ -102,20 +102,46 @@ static int control_line(int fd, char *bytes, size_t capacity, double deadline) {
     return -1;
 }
 
-static json_object *control_reconnect(Rt *rt) {
-    bool valid = rt_refresh(rt, true) == 0;
-    const char *state = "failed", *message = "MCP catalog is unavailable";
-    if (valid && !rt->enabled) { state = "disabled"; message = "MCP is disabled for this agent"; }
-    else if (valid && !rt->initialized) { state = "action_required"; message = "Waiting for the client to initialize its bridge"; }
-    else if (valid) {
-        rt_stop(rt, "MCP reconnect interrupted the request; completion unknown, call not replayed");
-        if (!rt_discover(rt) && !rt_changed(rt)) { state = "reconnected"; message = "Upstream discovery succeeded; client tool refresh may still be required"; }
-        else message = rt->km->error;
-    }
+static json_object *control_reply(const char *state, const char *message) {
     json_object *reply = json_object_new_object();
     json_object_object_add(reply, "status", json_object_new_string(state));
     json_object_object_add(reply, "message", json_object_new_string(message));
     return reply;
+}
+
+static void respond(Rt *rt, int fd, json_object *reply) {
+    json_object_object_add(reply, "control_version", json_object_new_int(1));
+    json_object_object_add(reply, "id", json_object_new_string(rt->id));
+    json_object_object_add(reply, "agent", json_object_new_string(rt->agent));
+    json_object_object_add(reply, "bridge_pid", json_object_new_int64(getpid()));
+    rt_send(rt->km, fd, reply);
+    json_object_put(reply);
+    close(fd);
+}
+
+/* Returns NULL when the reply is deferred until discovery finishes; the
+ * event loop keeps serving the client and status queries meanwhile. */
+static json_object *control_reconnect(Rt *rt, int fd) {
+    if (rt_refresh(rt, true)) return control_reply("failed", "MCP catalog is unavailable");
+    if (!rt->enabled) return control_reply("disabled", "MCP is disabled for this agent");
+    if (!rt->initialized) return control_reply("action_required", "Waiting for the client to initialize its bridge");
+    if (rt->reconnect_waiting) return control_reply("failed", "Another reconnect is still in progress");
+    rt_stop(rt, "MCP reconnect interrupted the request; completion unknown, call not replayed");
+    rt->failures = 0;
+    rt->retry_at = 0;
+    rt->discovering = true;
+    if (rt_start(rt)) return control_reply("failed", rt->km->error);
+    rt->reconnect_fd = fd;
+    rt->reconnect_waiting = true;
+    rt->reconnect_deadline = rt_clock() + RT_RECONNECT_SECONDS;
+    return NULL;
+}
+
+void rt_reconnect_finish(Rt *rt, const char *state, const char *message) {
+    if (!rt->reconnect_waiting) return;
+    rt->reconnect_waiting = false;
+    respond(rt, rt->reconnect_fd, control_reply(state, message));
+    rt->reconnect_fd = -1;
 }
 
 void rt_control_accept(Rt *rt) {
@@ -129,15 +155,12 @@ void rt_control_accept(Rt *rt) {
     }
     json_object *reply = NULL;
     if (!strcmp(command, "status")) reply = rt_connection_status(rt);
-    else if (!strcmp(command, "reconnect")) reply = control_reconnect(rt);
-    if (!reply) { close(fd); return; }
-    json_object_object_add(reply, "control_version", json_object_new_int(1));
-    json_object_object_add(reply, "id", json_object_new_string(rt->id));
-    json_object_object_add(reply, "agent", json_object_new_string(rt->agent));
-    json_object_object_add(reply, "bridge_pid", json_object_new_int64(getpid()));
-    rt_send(rt->km, fd, reply);
-    json_object_put(reply);
-    close(fd);
+    else if (!strcmp(command, "reconnect")) {
+        reply = control_reconnect(rt, fd);
+        if (!reply && rt->reconnect_waiting && rt->reconnect_fd == fd) return;
+    }
+    if (reply) respond(rt, fd, reply);
+    else close(fd);
 }
 
 static const char *reload_advice(const char *agent) {
@@ -146,13 +169,20 @@ static const char *reload_advice(const char *agent) {
     return "Reload or restart the Codex client; Kitmux cannot reconnect an arbitrary native client connection";
 }
 
-static int report(Km *km, const char *id, const char *state, const char *message, int count, bool json) {
+static int report(Km *km, const char *id, const char *state, const char *message, int count,
+                  json_object *failures, bool json) {
     json_object *reply = json_object_new_object();
     json_object_object_add(reply, "status", json_object_new_string(state));
     json_object_object_add(reply, "message", json_object_new_string(message));
     json_object_object_add(reply, "connections", json_object_new_int(count));
+    if (failures) json_object_object_add(reply, "failures", json_object_get(failures));
     if (json) puts(json_object_to_json_string_ext(reply, JSON_C_TO_STRING_PLAIN));
-    else printf("%s: %s (%d connections). %s\n", id, state, count, message);
+    else {
+        printf("%s: %s (%d connections). %s\n", id, state, count, message);
+        for (size_t i = 0; failures && i < json_object_array_length(failures); i++)
+            printf("  %s: %s\n", km_string(json_object_array_get_idx(failures, i), "status"),
+                   km_string(json_object_array_get_idx(failures, i), "message"));
+    }
     json_object_put(reply);
     return !strcmp(state, "reconnected") ? 0 : km_error(km, "%s", message);
 }
@@ -190,7 +220,7 @@ static bool valid_reply(json_object *reply, const char *id, const char *agent, c
         !valid_number(reply, "bridge_pid", 1, INT_MAX) || (peer_pid > 0 && json_object_get_int64(km_get(reply, "bridge_pid")) != peer_pid)) return false;
     if (!strcmp(command, "reconnect")) return km_string(reply, "status") != NULL;
     const char *state = km_string(reply, "state");
-    bool running = state && !strcmp(state, "running");
+    bool running = state && (!strcmp(state, "running") || !strcmp(state, "starting"));
     bool stopped = state && (!strcmp(state, "waiting") || !strcmp(state, "idle") || !strcmp(state, "disabled"));
     return (running || stopped) && valid_number(reply, "upstream_pid", running ? 1 : 0, running ? INT_MAX : 0) &&
            valid_number(reply, "pending", 0, RT_MAX_PENDING);
@@ -210,15 +240,22 @@ static json_object *parse_reply(const char *line) {
     return reply;
 }
 
-static json_object *query_socket(Km *km, const char *path, const char *id, const char *agent, const char *command,
-                                 double deadline, bool *attempted, bool *refused) {
+static json_object *unreachable(void) {
+    json_object *reply = json_object_new_object();
+    json_object_object_add(reply, "reachable", json_object_new_boolean(false));
+    json_object_object_add(reply, "state", json_object_new_string("unreachable"));
+    return reply;
+}
+
+static int open_query(Km *km, const char *path, const char *command, double deadline,
+                      bool *attempted, bool *refused, pid_t *peer_pid) {
     *attempted = *refused = false;
-    if (rt_clock() >= deadline) return NULL;
+    if (rt_clock() >= deadline) return -1;
     *attempted = true;
     struct sockaddr_un address;
-    if (socket_address(km, &address, path)) return NULL;
+    if (socket_address(km, &address, path)) return -1;
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (fd < 0) return NULL;
+    if (fd < 0) return -1;
     rt_nonblock(fd);
     fcntl(fd, F_SETFD, FD_CLOEXEC);
     int connected = connect(fd, (struct sockaddr *)&address, sizeof(address));
@@ -227,14 +264,16 @@ static json_object *query_socket(Km *km, const char *path, const char *id, const
         int error = 0; socklen_t length = sizeof(error);
         connected = control_poll(fd, POLLOUT, deadline) > 0 && !getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &length) && !error ? 0 : -1;
     }
-    pid_t peer_pid;
-    if (connected || !peer_user(fd, &peer_pid) || control_write(fd, command, deadline)) { close(fd); return NULL; }
+    if (connected || !peer_user(fd, peer_pid) || control_write(fd, command, deadline)) { close(fd); return -1; }
+    return fd;
+}
+
+static json_object *finish_query(int fd, const char *id, const char *agent, const char *command, pid_t peer_pid, double deadline) {
     char line[4096];
     int status = control_line(fd, line, sizeof(line), deadline);
     close(fd);
-    if (status) return NULL;
-    json_object *reply = parse_reply(line);
-    if (!valid_reply(reply, id, agent, command, peer_pid)) { json_object_put(reply); return NULL; }
+    json_object *reply = status ? NULL : parse_reply(line);
+    if (!valid_reply(reply, id, agent, command, peer_pid)) { json_object_put(reply); return unreachable(); }
     json_object_object_add(reply, "reachable", json_object_new_boolean(true));
     return reply;
 }
@@ -270,28 +309,31 @@ json_object *rt_control_connections(Km *km, const char *id, const char *agent, c
     if (!directory) { close(fd); *scan_complete = false; return connections; }
     snprintf(prefix, sizeof(prefix), "%016llx.", socket_key(id, agent));
     struct dirent *entry;
-    size_t candidates = 0;
+    size_t candidates = 0, opened = 0;
+    struct { int fd; pid_t peer; } queries[64];
+    /* Reconnect commands are sent to every bridge before any reply is awaited,
+     * so their discoveries run concurrently; status stays sequential. */
+    bool concurrent = !strcmp(command, "reconnect");
     double deadline = rt_clock() + timeout_ms / 1000.0;
     while ((entry = readdir(directory))) {
         if (strncmp(entry->d_name, prefix, strlen(prefix))) continue;
         if (fstatat(fd, entry->d_name, &st, AT_SYMLINK_NOFOLLOW) || !S_ISSOCK(st.st_mode) || st.st_uid != getuid()) continue;
         if (rt_clock() >= deadline) { *scan_complete = false; break; }
         if (++candidates > 64) { *scan_complete = false; break; }
-        json_object *reply = NULL;
+        int query = -1;
+        pid_t peer = 0;
         if (!km_path(km, path, sizeof(path), "%s/%s", directory_path, entry->d_name)) {
             bool attempted, refused;
-            reply = query_socket(km, path, id, agent, command, deadline, &attempted, &refused);
+            query = open_query(km, path, command, deadline, &attempted, &refused, &peer);
             if (!attempted) { *scan_complete = false; break; }
-            if (!reply && refused && remove_dead_socket(dirfd(directory), entry->d_name, strlen(prefix), &st)) continue;
+            if (query < 0 && refused && remove_dead_socket(dirfd(directory), entry->d_name, strlen(prefix), &st)) continue;
         }
-        if (!reply) {
-            reply = json_object_new_object();
-            json_object_object_add(reply, "reachable", json_object_new_boolean(false));
-            json_object_object_add(reply, "state", json_object_new_string("unreachable"));
-        }
-        json_object_array_add(connections, reply);
+        if (query >= 0 && concurrent) { queries[opened].fd = query; queries[opened++].peer = peer; continue; }
+        json_object_array_add(connections, query < 0 ? unreachable() : finish_query(query, id, agent, command, peer, deadline));
     }
     closedir(directory);
+    for (size_t i = 0; i < opened; i++)
+        json_object_array_add(connections, finish_query(queries[i].fd, id, agent, command, queries[i].peer, deadline));
     return connections;
 }
 
@@ -299,20 +341,36 @@ int rt_reconnect(Km *km, const char *id, const char *agent, bool json) {
     json_object *server = km_get(km_get(km->catalog, "mcps"), id);
     if (!server) return km_error(km, "Unknown MCP: %s", id);
     const char *mode = km_string(server, "mode");
-    if (!mode || strcmp(mode, "managed")) return report(km, id, "action_required", reload_advice(agent), 0, json);
+    if (!mode || strcmp(mode, "managed")) return report(km, id, "action_required", reload_advice(agent), 0, NULL, json);
     if (!km_effective(km, "mcp", id, agent, NULL, 0))
-        return report(km, id, "disabled", "MCP is disabled for this agent; reconnect does not change availability", 0, json);
+        return report(km, id, "disabled", "MCP is disabled for this agent; reconnect does not change availability", 0, NULL, json);
     bool complete;
-    json_object *connections = rt_control_connections(km, id, agent, "reconnect", 12000, &complete);
+    /* Bridges answer after their own discovery deadline; allow for that and the scan. */
+    json_object *connections = rt_control_connections(km, id, agent, "reconnect", (int)(RT_RECONNECT_SECONDS * 1000) + 5000, &complete);
     if (!connections) return km_error(km, "Cannot allocate MCP connection observations");
-    int count = 0, failed = 0;
+    json_object *failures = json_object_new_array();
+    int count = 0;
     for (size_t i = 0; i < json_object_array_length(connections); i++) {
-        json_object *reply = json_object_array_get_idx(connections, i);
-        const char *state = km_string(reply, "status");
-        if (json_object_get_boolean(km_get(reply, "reachable")) && state && !strcmp(state, "reconnected")) count++; else failed++;
+        json_object *reply = json_object_array_get_idx(connections, i), *failure = NULL;
+        const char *state = km_string(reply, "status"), *message = km_string(reply, "message");
+        bool reachable = json_object_get_boolean(km_get(reply, "reachable"));
+        if (reachable && state && !strcmp(state, "reconnected")) { count++; continue; }
+        failure = json_object_new_object();
+        json_object_object_add(failure, "status", json_object_new_string(reachable && state ? state : "unreachable"));
+        json_object_object_add(failure, "message", json_object_new_string(reachable && message ? message : "MCP bridge did not answer"));
+        if (reachable) json_object_object_add(failure, "bridge_pid", json_object_get(km_get(reply, "bridge_pid")));
+        json_object_array_add(failures, failure);
     }
     json_object_put(connections);
-    if (failed || !complete) return report(km, id, count ? "partial" : "failed", "At least one managed connection could not reconnect; disabled resources remain stopped", count, json);
-    if (!count) return report(km, id, "action_required", "No active managed bridge found for this agent; start or reload its client", 0, json);
-    return report(km, id, "reconnected", "Upstream discovery succeeded; client tool refresh may still be required", count, json);
+    int status;
+    if (json_object_array_length(failures) || !complete) {
+        char message[640];
+        const char *cause = json_object_array_length(failures) ? km_string(json_object_array_get_idx(failures, 0), "message")
+                                                              : "the connection scan was incomplete";
+        snprintf(message, sizeof(message), "At least one managed connection could not reconnect (%.500s); disabled resources remain stopped", cause);
+        status = report(km, id, count ? "partial" : "failed", message, count, failures, json);
+    } else if (!count) status = report(km, id, "action_required", "No active managed bridge found for this agent; start or reload its client", 0, NULL, json);
+    else status = report(km, id, "reconnected", "Upstream discovery succeeded; client tool refresh may still be required", count, NULL, json);
+    json_object_put(failures);
+    return status;
 }

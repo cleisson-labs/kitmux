@@ -114,10 +114,12 @@ static void print_connections(json_object *observation, const char *indent) {
         if (!json_object_get_boolean(km_get(connection, "reachable"))) {
             printf("%sbridge unreachable; process state unavailable\n", indent); continue;
         }
-        printf("%sbridge %lld / upstream %lld: %s, %d pending\n", indent,
+        const char *failure = km_string(connection, "last_error");
+        printf("%sbridge %lld / upstream %lld: %s, %d pending%s%s\n", indent,
                (long long)json_object_get_int64(km_get(connection, "bridge_pid")),
                (long long)json_object_get_int64(km_get(connection, "upstream_pid")),
-               km_string(connection, "state"), json_object_get_int(km_get(connection, "pending")));
+               km_string(connection, "state"), json_object_get_int(km_get(connection, "pending")),
+               failure ? "; last error: " : "", failure ? failure : "");
     }
 }
 

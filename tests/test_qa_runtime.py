@@ -138,6 +138,51 @@ class QaRuntimeTests(unittest.TestCase):
         response = self.tools()
         self.assertIn("tools capability", response["error"]["message"])
 
+    # 2: startup budget, retry, and recovery notification
+    def test_slow_upstream_start_completes(self):
+        self.environment(KM_QA_DELAY=6)
+        self.bridge()
+        self.assertEqual(self.tools(timeout=20)["result"]["tools"][0]["name"], "echo")
+
+    def test_failed_start_retries_and_announces_recovery(self):
+        self.environment(KM_QA_FAIL_FIRST=self.home / "failed-once")
+        self.bridge()
+        self.assertIn("error", self.tools())
+        self.send({"id": 3, "method": "tools/call", "params": {"name": "echo", "arguments": {}}})
+        packets = [self.packet(), self.packet()]
+        self.assertIn({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"}, packets)
+        self.assertIn("result", next(p for p in packets if p.get("id") == 3))
+        self.assertEqual(self.starts(), 2)
+
+    def test_reconnect_waits_for_slow_upstream_discovery(self):
+        self.environment(KM_QA_DELAY=6)
+        self.bridge()
+        result = self.reconnect()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads(result.stdout)["status"], "reconnected")
+        self.assertEqual(self.packet()["method"], "notifications/tools/list_changed")
+
+    # 3: crash loop and backoff
+    def test_crashing_upstream_does_not_cause_relist_loop(self):
+        self.environment(KM_QA_CRASH_LIST=1)
+        self.bridge()
+        request_id, deadline = 2, time.monotonic() + 3
+        self.send({"id": request_id, "method": "tools/list"})
+        while time.monotonic() < deadline:
+            if b"\n" not in self.buffer and not self.readable(deadline - time.monotonic()):
+                break
+            if self.packet().get("method") == "notifications/tools/list_changed":
+                request_id += 1
+                self.send({"id": request_id, "method": "tools/list"})
+        self.assertLessEqual(self.starts(), 2)
+
+    def test_repeated_start_failures_back_off(self):
+        self.environment(KM_QA_ALWAYS_FAIL=1)
+        self.bridge()
+        for request_id in (2, 3, 4):
+            self.assertIn("error", self.tools(request_id))
+        self.assertEqual(self.starts(), 2)
+
     # 4: stale control sockets
     def test_sighup_removes_control_socket(self):
         self.bridge()
@@ -228,6 +273,38 @@ class QaRuntimeTests(unittest.TestCase):
             stream.truncate(0)
             stream.write(json.dumps(self.config))
         self.assertEqual(self.packet(3)["method"], "notifications/tools/list_changed")
+
+    # 8: status while busy
+    def test_status_reports_starting_while_upstream_initializes(self):
+        self.environment(KM_QA_DELAY=3)
+        self.bridge()
+        self.send({"id": 2, "method": "tools/list"})
+        time.sleep(.3)
+        observed = self.status()
+        self.assertEqual(observed["state"], "starting")
+        self.assertGreater(observed["connections"][0]["upstream_pid"], 0)
+        self.assertIn("result", self.reply(2))
+
+    # 9: reconnect failure reasons
+    def test_reconnect_reports_bridge_failure_reason(self):
+        self.environment(KM_QA_CAPS='{"prompts":{}}')
+        self.bridge()
+        result = self.reconnect()
+        self.assertNotEqual(result.returncode, 0)
+        report = json.loads(result.stdout)
+        self.assertEqual(report["status"], "failed")
+        self.assertIn("tools capability", report["failures"][0]["message"])
+        self.assertIn("tools capability", result.stderr)
+        text = self.command("mcp", "reconnect", "stub", "--agent", "codex")
+        self.assertNotEqual(text.returncode, 0)
+        self.assertIn("failed: Managed bridge requires an MCP endpoint with the tools capability", text.stdout)
+
+    def test_direct_reconnect_text_output_gives_client_advice(self):
+        self.config["mcps"]["stub"]["mode"] = "direct"
+        self.save()
+        result = self.command("mcp", "reconnect", "stub", "--agent", "opencode")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("/mcps", result.stdout)
 
     # 10: tolerant framing and early ping
     def test_upstream_noise_lines_are_skipped(self):

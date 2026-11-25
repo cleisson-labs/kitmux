@@ -101,6 +101,11 @@ bool rt_identifier(json_object *value) {
     return json_object_is_type(value, json_type_int) || json_object_is_type(value, json_type_string);
 }
 
+bool rt_named_id(json_object *id, const char *name) {
+    return json_object_is_type(id, json_type_string) && strlen(name) == (size_t)json_object_get_string_len(id) &&
+           !strcmp(json_object_get_string(id), name);
+}
+
 static bool valid_envelope(json_object *message) {
     if (!json_object_is_type(message, json_type_object)) return false;
     const char *version = km_string(message, "jsonrpc");

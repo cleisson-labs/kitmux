@@ -11,6 +11,10 @@
 
 #define SKILL_MAX_ENTRIES 4096u
 #define SKILL_MAX_TOTAL (32u * 1024u * 1024u)
+/* Installed packages are immutable: agents cannot edit them through projections. */
+#define SKILL_FILE_MODE 0400
+#define SKILL_EXECUTABLE_MODE 0500
+#define SKILL_DIRECTORY_MODE 0500
 
 typedef struct {
     Km *km;
@@ -103,7 +107,7 @@ static int visit_file(Tree *tree, const char *relative, const char *path,
             return -1;
         }
         output = open(target, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW,
-                      actual.st_mode & 0111 ? 0700 : 0600);
+                      actual.st_mode & 0111 ? SKILL_EXECUTABLE_MODE : SKILL_FILE_MODE);
         if (output < 0) {
             close(input);
             return km_error(tree->km, "cannot create skill file: %s", strerror(errno));
@@ -157,6 +161,8 @@ static int walk(Tree *tree, const char *relative, unsigned depth) {
         char target[PATH_MAX];
         result = km_path(tree->km, target, sizeof(target), "%s%s%s", tree->destination, *relative ? "/" : "", relative);
         if (!result) result = sync_directory(tree->km, target);
+        if (!result && chmod(target, SKILL_DIRECTORY_MODE))
+            result = km_error(tree->km, "cannot protect installed skill directory %s: %s", target, strerror(errno));
     }
     return result;
 }
@@ -258,6 +264,8 @@ int km_skill_remove_tree(const char *path) {
     struct stat st;
     if (lstat(path, &st)) return errno == ENOENT ? 0 : -1;
     if (!S_ISDIR(st.st_mode) || S_ISLNK(st.st_mode)) return unlink(path);
+    /* Staged packages are read-only; restore owner write access before removal. */
+    if (chmod(path, 0700)) return -1;
     DIR *directory = opendir(path);
     if (!directory) return -1;
     struct dirent *entry;

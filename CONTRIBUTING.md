@@ -47,6 +47,11 @@ download or build release dependencies.
 
 ## Making a change
 
+CI checks newly edited C lines with clang-format 18 and the repository's
+`.clang-format`. To preview the changes on a branch, run
+`git clang-format --style file --extensions c,h --diff origin/main HEAD -- .`.
+The vendored tomlc99 files retain their upstream formatting.
+
 1. Keep the change focused and follow the surrounding C code and existing helpers.
 2. For behavior changes, add a regression test, confirm it fails, implement the
    fix, and rerun the relevant tests. Documentation-only changes need a content

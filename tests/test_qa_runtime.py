@@ -1,7 +1,6 @@
 """Managed bridge regressions found by QA; local stub upstreams only."""
 import json
 import os
-from pathlib import Path
 import select
 import signal
 import socket

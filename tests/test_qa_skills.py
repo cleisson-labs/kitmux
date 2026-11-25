@@ -237,7 +237,10 @@ class QaSkillTests(unittest.TestCase):
         bare, commit = self.repository({"alpha/SKILL.md": "---\nname: alpha\ndescription: Git\n---\nBody\n",
                                         f"alpha/{deep}/file.txt": "deep\n"})
         hard = resource.getrlimit(resource.RLIMIT_STACK)[1]
-        stack = lambda: resource.setrlimit(resource.RLIMIT_STACK, (192 * 1024, hard))
+
+        def stack():
+            resource.setrlimit(resource.RLIMIT_STACK, (192 * 1024, hard))
+
         result = self.cli("skill", "add", bare, "--path", "alpha", "--ref", commit, ok=False, limits=stack)
         self.assertGreater(result.returncode, 0)
         self.assertIn("nest", result.stderr)

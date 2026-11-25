@@ -13,8 +13,11 @@ Build with `make`; run `make test`, `make sanitize`, and `make analyze` (cppchec
 pkg-config: json-c, yaml-0.1, ncursesw, and libcrypto. Never install dependencies
 or mutate live client configuration as part of a test.
 
-CI targets macOS 15 and Ubuntu 22.04, each on arm64 and x86_64; the single required
-check is `ci-ok`. Keep workflow actions pinned to commit SHAs with least privileges. Release builds use
+CI targets macOS 15 and Ubuntu 22.04, each on arm64 and x86_64. Source changes
+must pass `ci-ok`; title edits must pass `Conventional Commit title`. Preserve
+the docs-only classification, changed-line C formatting, release qualification,
+gcovr report on Linux x86_64, and CodeQL checks when editing CI. Pin workflow
+actions to commit SHAs with least privileges. Release builds use
 `make release VERSION=vX.Y.Z`, pinned source archives, and private dependency
 prefixes; never install their bundled libraries globally. Keep native tests
 opt-in, and check packaged binaries without development libraries before release.

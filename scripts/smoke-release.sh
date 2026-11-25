@@ -1,19 +1,23 @@
 #!/bin/sh
 # Run isolated existing behavioral contracts against the packaged executable.
 set -eu
-[ "$#" -eq 1 ] || { echo 'Usage: smoke-release.sh BINARY' >&2; exit 1; }
-binary_dir=$(CDPATH= cd -- "$(dirname -- "$1")" && pwd)
-export KITMUX_BINARY="$binary_dir/$(basename -- "$1")"
-root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+[ "$#" -eq 1 ] || {
+  echo 'Usage: smoke-release.sh BINARY' >&2
+  exit 1
+}
+binary_dir=$(CDPATH='' cd -- "$(dirname -- "$1")" && pwd)
+KITMUX_BINARY="$binary_dir/$(basename -- "$1")"
+export KITMUX_BINARY
+root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 export PYTHONPATH="$root/tests"
 unset OPENSSL_MODULES OPENSSL_CONF DYLD_LIBRARY_PATH LD_LIBRARY_PATH
 "$KITMUX_BINARY" --version
-"$KITMUX_BINARY" --help > /dev/null
+"$KITMUX_BINARY" --help >/dev/null
 python3 -m unittest -v \
-    test_import_setup.ImportSetupTests.test_import_merges_same_native_name_with_per_client_execution_variants \
-    test_skills.SkillTests.test_local_install_preserves_package_and_starts_unassigned \
-    test_runtime.RuntimeTests.test_discovery_call_metadata_and_reconnect \
-    test_tui.TerminalTests.test_resize_navigation_and_terminal_restore
+  test_import_setup.ImportSetupTests.test_import_merges_same_native_name_with_per_client_execution_variants \
+  test_skills.SkillTests.test_local_install_preserves_package_and_starts_unassigned \
+  test_runtime.RuntimeTests.test_discovery_call_metadata_and_reconnect \
+  test_tui.TerminalTests.test_resize_navigation_and_terminal_restore
 python3 - <<'PY'
 import tempfile
 from test_tui import TerminalSession

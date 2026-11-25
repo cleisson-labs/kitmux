@@ -586,14 +586,18 @@ The [v0.7 release notes](V0.7.md) describe the current release.
 
 ### Continuous integration and release provenance
 
-GitHub Actions runs a single required gate, `ci-ok`, which passes only when workflow
-linting (actionlint and zizmor), cppcheck static analysis (`make analyze`), and the
-ordinary and ASan/UBSan suites on macOS 15 and Ubuntu 22.04 (arm64 and x86_64) all
-succeed; pull requests that change only documentation skip the build jobs. CodeQL
-scans the C sources and Python tests on pull requests and weekly, pull request titles
-follow Conventional Commits, and Dependabot proposes pinned action updates weekly.
-Every action is pinned to a commit SHA, and each job receives only the token
-permissions it needs.
+The `ci-ok` check requires the shared security and documentation checks, C and
+Python CodeQL, cppcheck, and the native tests. CI runs both ordinary and
+ASan/UBSan suites on macOS 15 and Ubuntu 22.04 for arm64 and x86_64. Linux
+x86_64 records gcovr line and branch coverage in the build summary and the
+`kitmux-linux-coverage` HTML artifact. Documentation-only PRs can skip native
+tests and cppcheck. The executable README installer and packaging notices always
+trigger them. Weekly runs check external documentation links and repeat CodeQL.
+Dependabot groups weekly Action updates and waits seven days after publication.
+
+The C check applies clang-format to changed lines in maintained C sources. Pull
+requests changing packaging run the four-target release rehearsal before
+`ci-ok` passes. A separate title check validates Conventional Commits on title edits.
 
 Releases built by the attestation-enabled workflow carry SLSA build provenance for
 every archive and `SHA256SUMS`. Verify a download before installing it (GitHub CLI
@@ -601,9 +605,11 @@ every archive and `SHA256SUMS`. Verify a download before installing it (GitHub C
 
 ```sh
 gh attestation verify kitmux-vX.Y.Z-OS-ARCH.tar.gz --repo cleisson-labs/kitmux \
-  --signer-workflow cleisson-labs/kitmux/.github/workflows/release.yml \
+  --signer-workflow cleisson-labs/.github/.github/workflows/release.yml \
   --source-ref refs/tags/vX.Y.Z
 ```
 
+For v0.7.0, use the signer from the release attestation,
+`cleisson-labs/kitmux/.github/workflows/release.yml`.
 Published v0.5.0 and v0.6.0 assets predate the attestation-enabled workflow.
 Use their `SHA256SUMS` for checksum verification.

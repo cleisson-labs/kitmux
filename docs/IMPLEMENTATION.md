@@ -42,16 +42,23 @@ only when local documentation is absent.
   enabled groups combine, and unassigned resources remain off.
 - `adapters*.c` preserve native configuration and own only adopted entries,
   projections, and definitions. Their journal records originals, current values,
-  and pending writes for conflict detection and recovery.
+  and pending writes for conflict detection and recovery. Sync and restore
+  checkpoint each client and roll back only a failed client's plan, so other
+  clients still apply. `adapters_mcp_import.c` owns MCP import/refresh and
+  `adapters_skill_rules.c` owns the OpenCode permission rules Kitmux adds.
 - `skills*.c` install complete immutable packages from local directories or pinned
   Git objects. Updates preserve policy, and rollback retains previous packages.
 - `subagents*.c` parse and render common instructions and native variants without
   translating away native model, tool, or permission settings.
+  `subagents_format_quote.c` emits escapes that every parser accepts, and each
+  render is parsed back before it can reach the ownership journal.
 - `runtime*.c` implement the optional local stdio MCP bridge and authenticated
   process controls. Direct integrations remain owned by each native client.
 - `tui*.c` provide grouped resource trees in the ncurses interface; `main.c`
   routes equivalent CLI commands. Row identity distinguishes headers from
   resources, while resource identity deduplicates actions across memberships.
+  `tui_sync.c` reloads the catalog after external saves, checks pending native
+  sync for the banner, and builds the Clients tab.
 - `tui_details.c` selects allowlisted resource content; `tui_document.c` owns the
   read-only Unicode/Markdown pager. Apply previews retain their explicit review
   behavior and bounded command-output buffer.
@@ -68,7 +75,7 @@ used for tests only.
 ## Persistence and recovery
 
 Catalog mutations automatically synchronize clients previously adopted with
-sync or import. Atomic file replacement and a pending ownership journal make
+sync or a full import; `subagent import` adopts only that client's subagents. Atomic file replacement and a pending ownership journal make
 partial application recoverable; changes across multiple files are not a single
 atomic transaction. Conflicting external edits are reported rather than replaced.
 Restore recovers the adopted originals and releases the selected clients from
@@ -76,9 +83,61 @@ automatic management.
 
 Scoped groups use catalog schema v3. Explicit migration splits legacy groups
 without changing resource availability and backs up the original catalog before
-replacement. Ownership journals retain their existing format. Older Kitmux
+replacement. Ownership journals keep their format with two optional keys:
+`subagent_agents` (subagent-only adoption) and `skill_rules` (OpenCode permission
+rules Kitmux added). Whole-array permission records written by v0.5.0 migrate on
+the first sync, and restore accepts both forms. Older Kitmux
 builds reject schema v3; keep v0.4 for recovery. Native project and organization
 settings keep their own precedence.
+
+## QA review fixes (unreleased)
+
+A full review and terminal QA on 25 November 2026 found defects behind three
+reported symptoms: checkbox toggles that did not stick, MCPs that stayed on or off
+natively after a Kitmux change, and resource details that failed to open. Every
+fix below began with a failing regression test in `tests/test_qa_*.py`.
+
+- Native sync: one client's conflict or write failure no longer blocks the others.
+  Dropped client defaults and deletions that match the desired state are not
+  conflicts. Errors name the client, file, entry, and recovery command, and
+  `import --refresh` adopts deletions for one client. MCPs are written only into
+  clients where they are ON or already present, so credentials no longer spread to
+  unassigned clients. Imports leave adopted clients in sync. Re-import and refresh
+  keep group and inherited availability. `subagent import` no longer adopts MCP or
+  skill management. Codex comments next to edited tables survive, and JSON inserts
+  follow the file's indentation.
+- Skills: OpenCode permission ownership is limited to Kitmux rules. Deleted links
+  are recreated, or left absent when the skill is off. Native denies yield to a
+  Kitmux enable until restore. Codex path selectors are enforced by every location.
+  Packages are read-only. Git ignores inherited repository variables, and extraction
+  depth is bounded. Import skips unusable entries with named warnings.
+- Subagents: renders escape every control character and are parsed back before
+  they are recorded, so ANSI or C1 text can no longer corrupt the ownership journal.
+  Journals corrupted by v0.5.0 recover on the next sync. Layout checks apply only to
+  clients with Kitmux-managed subagents. Stale records are released. Unusable native
+  files are skipped by name. Edits are validated before saving. Imported OpenCode
+  Markdown is disabled in place. Case-only ID collisions are rejected.
+- Managed bridge: upstreams with extra capabilities are accepted (tools only are
+  bridged). Startup is asynchronous with a 30-second budget, retry, and backoff, and
+  status gains `starting`. Crash relist loops are gone. Stale sockets of exited
+  bridges are pruned. Messages are forwarded byte-for-byte with 512-level nesting.
+  Upstreams receive EOF before termination. In-place catalog edits are observed.
+  Reconnect reports each failure reason.
+- TUI: the assign dialog changes only the clients the user edits and keeps
+  assignments of globally OFF items. Bulk actions continue when the catalog saved
+  but native sync failed, and they include marked rows hidden by collapse or search.
+  The list reloads after external catalog changes; this also fixes a SIGSEGV after an
+  external group removal. A banner and the Clients tab report pending native sync.
+  Esc responds immediately, cancelled searches keep the previous filter, long IDs
+  widen with the terminal, and doctor output opens in a viewer.
+
+Remaining limits: Codex only logs `tools/list_changed`, so a running Codex session
+shows managed tool changes after a restart. Bridge retries happen on the next
+client request or reconnect, with no background timer. Clients that were made
+fully managed by an earlier `subagent import` stay managed until
+`restore --agent CLIENT` and re-adoption. Native client behavior was verified from
+installed client binaries and documentation, not by `make test-native` in this
+pass.
 
 ## V0.5 verification and release gates
 

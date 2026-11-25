@@ -121,6 +121,7 @@ static int permission_state(Km *km, json_object *rules, const char *id, bool *en
 int ad_skill_native_enabled(AdRun *run, const char *agent, const char *id, const char *source, bool *enabled) {
     *enabled=true;
     if (!strcmp(agent,"codex")) return codex_enabled(run,id,source,enabled,NULL,0);
+    if (!strcmp(agent,"antigravity")) return ad_skill_manifest_enabled(run,id,enabled);
     AdFile *file=!strcmp(agent,"claude") ? ad_file(run,agent,".claude/settings.json",false) : ad_native_file(run,agent);
     if (!file) return -1;
     json_object *doc=ad_parse(run->km,file->text);
@@ -339,6 +340,8 @@ int ad_import_skills(AdRun *run, const char *agent) {
         return scan_root(run,agent,".agents/skills",true);
     }
     if (!strcmp(agent,"claude")) return scan_root(run,agent,".claude/skills",true);
+    if (!strcmp(agent,"antigravity"))
+        return scan_root(run,agent,".gemini/config/skills",true)<0 ? -1 : scan_root(run,agent,".agents/skills",false);
     if (scan_root(run,agent,".config/opencode/skills",true)<0 ||
         scan_root(run,agent,".claude/skills",false)<0) return -1;
     return scan_root(run,agent,".agents/skills",false);

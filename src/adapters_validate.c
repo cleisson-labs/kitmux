@@ -15,6 +15,7 @@ static bool file_path(Km *km, const char *path, const char *agent) {
     if (!strcmp(agent,"codex")) relatives[0]=".codex/config.toml";
     else if (!strcmp(agent,"claude")) { relatives[0]=".claude.json"; relatives[1]=".claude/settings.json"; }
     else if (!strcmp(agent,"opencode")) { relatives[0]=".config/opencode/opencode.json"; relatives[1]=".config/opencode/opencode.jsonc"; }
+    else if (!strcmp(agent,"antigravity")) relatives[0]=".gemini/config/mcp_config.json";
     else return false;
     for (int i=0;relatives[i];i++) {
         if (km_path(km,expected,sizeof(expected),"%s/%s",km->home,relatives[i])<0) return false;
@@ -25,6 +26,7 @@ static bool file_path(Km *km, const char *path, const char *agent) {
 
 static bool entry_key(const char *agent, const char *path, const char *key) {
     if (!strcmp(agent,"codex")) return km_valid_id(key);
+    if (!strcmp(agent,"antigravity")) return !strncmp(key,"mcpServers/",11) && km_valid_id(key+11);
     if (!strcmp(agent,"claude")) {
         bool settings=strlen(path)>14 && !strcmp(path+strlen(path)-14,"/settings.json");
         const char *prefix=settings ? "skillOverrides/" : "mcpServers/";
@@ -57,7 +59,8 @@ static bool links_valid(Km *km, json_object *records) {
     json_object_object_foreach(records,path,record) {
         const char *agent=km_string(record,"agent"); char prefix[PATH_MAX];
         if (!agent || !km_valid_agent(agent) || !string_field(record,"agent",true)) return false;
-        const char *roots[3]={!strcmp(agent,"codex") ? ".agents/skills" : !strcmp(agent,"claude") ? ".claude/skills" : ".config/opencode/skills",NULL,NULL};
+        const char *roots[3]={!strcmp(agent,"codex") ? ".agents/skills" : !strcmp(agent,"claude") ? ".claude/skills" :
+                              !strcmp(agent,"antigravity") ? ".gemini/config/skills" : ".config/opencode/skills",NULL,NULL};
         if (!strcmp(agent,"codex")) roots[1]=".codex/skills";
         bool allowed=false;
         for (size_t i=0;roots[i];i++) {
@@ -128,8 +131,8 @@ int ad_server_shape(Km *km, const char *agent, json_object *server) {
         } else if (!string_field(server,"command",true)) goto invalid;
     }
     if (args && !strings(args)) goto invalid;
-    const char *text_keys[]={"url","cwd","type"};
-    for (size_t i=0;i<3;i++) if (!string_field(server,text_keys[i],false)) goto invalid;
+    const char *text_keys[]={"url","serverUrl","cwd","type"};
+    for (size_t i=0;i<4;i++) if (!string_field(server,text_keys[i],false)) goto invalid;
     const char *bool_keys[]={"enabled","disabled"};
     for (size_t i=0;i<2;i++) {
         json_object *value=km_get(server,bool_keys[i]);
@@ -150,7 +153,18 @@ invalid:
     return km_error(km,"unsupported or malformed native MCP definition for %s",agent);
 }
 
+static bool suffix(const char *path, const char *end) {
+    size_t length=strlen(path), size=strlen(end);
+    return length>=size && !strcmp(path+length-size,end);
+}
+
 int ad_native_shape(Km *km, const char *agent, const char *path, json_object *doc) {
+    if (!strcmp(agent,"antigravity") && suffix(path,"/skills.json")) {
+        json_object *exclude=km_get(doc,"exclude");
+        for (size_t i=0;exclude && json_object_is_type(exclude,json_type_array) && i<json_object_array_length(exclude);i++)
+            if (!json_object_is_type(json_object_array_get_idx(exclude,i),json_type_string)) goto invalid;
+        return exclude && !json_object_is_type(exclude,json_type_array) ? km_error(km,"Antigravity skills.json exclude must be an array of names") : 0;
+    }
     if (!strcmp(agent,"claude") && strstr(path,"/settings.json")) {
         json_object *overrides=km_get(doc,"skillOverrides");
         if (overrides && !json_object_is_type(overrides,json_type_object)) goto invalid;

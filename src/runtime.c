@@ -129,7 +129,7 @@ int km_runtime_command(Km *km, int argc, char **argv) {
         else if (!strcmp(argv[i], "--json") && !json) json = true;
         else return km_error(km, "Unknown or duplicate runtime option: %s", argv[i]);
     }
-    if (!agent || !km_valid_agent(agent)) return km_error(km, "Choose --agent codex, claude, or opencode");
+    if (!agent || !km_valid_agent(agent)) return km_error(km, "Choose --agent codex, claude, opencode, or antigravity");
     if (km_load(km)) return -1;
     if (!strcmp(argv[0], "bridge")) {
         if (json) return km_error(km, "bridge reserves stdout for the MCP protocol; --json is not applicable");

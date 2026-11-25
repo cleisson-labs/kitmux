@@ -11,6 +11,7 @@
 AdFile *ad_native_file(AdRun *run, const char *agent) {
     if (!strcmp(agent,"codex")) return ad_file(run,agent,".codex/config.toml",true);
     if (!strcmp(agent,"claude")) return ad_file(run,agent,".claude.json",false);
+    if (!strcmp(agent,"antigravity")) return ad_file(run,agent,".gemini/config/mcp_config.json",false);
     char a[PATH_MAX],b[PATH_MAX]; struct stat sa,sb;
     if (km_path(run->km,a,sizeof(a),"%s/.config/opencode/opencode.json",run->km->home)<0 ||
         km_path(run->km,b,sizeof(b),"%s/.config/opencode/opencode.jsonc",run->km->home)<0) return NULL;
@@ -85,11 +86,16 @@ static bool sse_only(json_object *resource, const char *agent, const char *url) 
     return false;
 }
 
+/* agy writes serverUrl; an imported url form is kept as the client wrote it. */
+static const char *url_key(json_object *native, const char *agent) {
+    return !strcmp(agent,"antigravity") && !km_get(native,"url") ? "serverUrl" : "url";
+}
+
 static json_object *render_native(Km *km, json_object *resource, json_object *execution, const char *id,
                                   const char *agent, bool enabled, const char *bridge) {
     json_object *original=km_get(km_get(resource,"native"),agent), *native=clone(original);
     const char *transport=km_string(execution,"transport"), *url=km_string(execution,"url");
-    bool opencode=!strcmp(agent,"opencode"), codex=!strcmp(agent,"codex");
+    bool opencode=!strcmp(agent,"opencode"), codex=!strcmp(agent,"codex"), antigravity=!strcmp(agent,"antigravity");
     if (transport && !strcmp(transport,"http")) {
         if (!url) { json_object_put(native); km_error(km,"HTTP MCP is missing its URL"); return NULL; }
         if (sse_only(resource,agent,url)) {
@@ -98,10 +104,11 @@ static json_object *render_native(Km *km, json_object *resource, json_object *ex
                      "Streamable HTTP only; run kitmux mcp disable %s --agent %s",id,agent,id,agent);
             return NULL;
         }
-        const char *old=km_string(native,"url");
+        const char *key=url_key(native,agent), *old=km_string(native,key);
         if (old && strcmp(old,url)) { json_object_put(native); km_error(km,"changed imported endpoint requires explicit re-import"); return NULL; }
-        json_object_object_add(native,"url",json_object_new_string(url));
-        if (!codex && !km_get(native,"type")) json_object_object_add(native,"type",json_object_new_string(opencode ? "remote" : "http"));
+        json_object_object_add(native,key,json_object_new_string(url));
+        if (!codex && !antigravity && !km_get(native,"type"))
+            json_object_object_add(native,"type",json_object_new_string(opencode ? "remote" : "http"));
     } else {
         json_object *array=command_array(km,execution,id,agent,bridge);
         if (!array || !json_object_is_type(array,json_type_array) || !json_object_array_length(array)) {
@@ -133,6 +140,9 @@ static json_object *render_native(Km *km, json_object *resource, json_object *ex
         json_object_object_add(native,"enabled",json_object_new_boolean(enabled));
     if (opencode && (!original || managed || !enabled || km_get(original,"disabled")))
         json_object_object_add(native,"disabled",json_object_new_boolean(!enabled));
+    if (antigravity && (!enabled || km_get(original,"disabled")))
+        json_object_object_add(native,"disabled",json_object_new_boolean(!enabled));
+    if (antigravity) ad_drop_empty(native);
     return native;
 }
 
@@ -144,7 +154,8 @@ json_object *ad_native(Km *km, json_object *resource, const char *id, const char
 }
 
 void ad_mcp_key(char *key, size_t size, const char *agent, const char *id) {
-    snprintf(key,size,"%s%s",!strcmp(agent,"claude") ? "mcpServers/" : !strcmp(agent,"opencode") ? "mcp/servers/" : "",id);
+    const char *prefix=!strcmp(agent,"codex") ? "" : !strcmp(agent,"opencode") ? "mcp/servers/" : "mcpServers/";
+    snprintf(key,size,"%s%s",prefix,id);
 }
 
 static json_object *entry_record(AdRun *run, AdFile *file, const char *key) {

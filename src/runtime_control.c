@@ -166,6 +166,7 @@ void rt_control_accept(Rt *rt) {
 static const char *reload_advice(const char *agent) {
     if (!strcmp(agent, "claude")) return "Use Reconnect in Claude Code's /mcp menu; direct connections belong to the client";
     if (!strcmp(agent, "opencode")) return "Use OpenCode's /mcps menu to disconnect and connect; direct connections belong to the client";
+    if (!strcmp(agent, "antigravity")) return "Open the /mcp panel in Antigravity CLI (agy) and reload server configurations; direct connections belong to the client";
     return "Reload or restart the Codex client; Kitmux cannot reconnect an arbitrary native client connection";
 }
 

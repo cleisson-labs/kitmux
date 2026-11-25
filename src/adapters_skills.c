@@ -26,10 +26,16 @@ static int real_parents(Km *km, const char *agent, const char *path) {
     return 0;
 }
 
+static const char *skill_root(const char *agent) {
+    if (!strcmp(agent,"codex")) return ".agents/skills";
+    if (!strcmp(agent,"claude")) return ".claude/skills";
+    return !strcmp(agent,"antigravity") ? ".gemini/config/skills" : ".config/opencode/skills";
+}
+
 static bool projection_path(Km *km, const char *agent, const char *path, const char *id) {
     const char *roots[3]={NULL,NULL,NULL}; char expected[PATH_MAX];
     if (!strcmp(agent,"codex")) { roots[0]=".agents/skills"; roots[1]=".codex/skills"; }
-    else roots[0]=!strcmp(agent,"claude") ? ".claude/skills" : ".config/opencode/skills";
+    else roots[0]=skill_root(agent);
     if (!km_valid_agent(agent) || !km_valid_id(id)) return false;
     for (size_t i=0;roots[i];i++) {
         if (km_path(km,expected,sizeof(expected),"%s/%s/%s",km->home,roots[i],id)<0) return false;
@@ -114,9 +120,6 @@ void ad_release_skill_link(AdRun *run, const char *path) {
     json_object_object_del(links(run),path);
 }
 
-static const char *skill_root(const char *agent) {
-    return !strcmp(agent,"codex") ? ".agents/skills" : !strcmp(agent,"claude") ? ".claude/skills" : ".config/opencode/skills";
-}
 
 static bool binding_text(json_object *entry, const char *key) {
     json_object *value=km_get(entry,key);
@@ -126,8 +129,9 @@ static bool binding_text(json_object *entry, const char *key) {
 
 static bool origin_path(Km *km, const char *agent, const char *path, const char *id) {
     if (projection_path(km,agent,path,id)) return true;
-    if (strcmp(agent,"opencode")) return false;
-    if (projection_path(km,"claude",path,id)) return true;
+    bool opencode=!strcmp(agent,"opencode");
+    if (!opencode && strcmp(agent,"antigravity")) return false;
+    if (opencode && projection_path(km,"claude",path,id)) return true;
     char shared[PATH_MAX];
     return km_path(km,shared,sizeof(shared),"%s/.agents/skills/%s",km->home,id)==0 && !strcmp(shared,path);
 }
@@ -233,6 +237,15 @@ bool ad_skill_shared_visible(AdRun *run, const char *id, json_object *skill) {
     return false;
 }
 
+/* Antigravity also reads ~/.agents/skills, where Kitmux projects Codex skills. */
+bool ad_skill_agents_root_visible(AdRun *run, const char *id, json_object *skill) {
+    char shared[PATH_MAX];
+    if (km_path(run->km,shared,sizeof(shared),"%s/.agents/skills/%s",run->km->home,id)<0) return true;
+    if (km_effective(run->km,"skill",id,"codex",NULL,0) && codex_shared_projection(skill,shared)) return true;
+    if (km_get(km_get(km_get(run->state,"links"),shared),"after")) return true;
+    return binding_at(skill,"origins","antigravity",shared);
+}
+
 static int claude_overrides(AdRun *run) {
     AdFile *file=ad_file(run,"claude",".claude/settings.json",false);
     if (!file) return -1;
@@ -275,6 +288,7 @@ int ad_sync_skills(AdRun *run, const char *agent) {
     }
     if (!strcmp(agent,"claude")) return claude_overrides(run);
     if (!strcmp(agent,"opencode")) return ad_sync_skill_rules(run);
+    if (!strcmp(agent,"antigravity")) return ad_sync_skill_excludes(run);
     return 0;
 }
 
@@ -288,5 +302,6 @@ int ad_restore_links(AdRun *run, const char *agent) {
         const char *before=km_string(record,"before");
         if (link_change(run,owner,path,before,false)<0) return -1;
     }
-    return !agent || !strcmp(agent,"opencode") ? ad_restore_skill_rules(run) : 0;
+    if ((!agent || !strcmp(agent,"opencode")) && ad_restore_skill_rules(run)<0) return -1;
+    return !agent || !strcmp(agent,"antigravity") ? ad_restore_skill_excludes(run) : 0;
 }

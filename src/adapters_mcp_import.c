@@ -6,6 +6,7 @@ json_object *ad_mcp_canonical(Km *km, const char *agent, json_object *native) {
     if (ad_server_shape(km,agent,native)<0) return NULL;
     json_object *resource=json_object_new_object(), *command=km_get(native,"command");
     const char *url=km_string(native,"url");
+    if (!url && !strcmp(agent,"antigravity")) url=km_string(native,"serverUrl");
     if (url) {
         json_object_object_add(resource,"transport",json_object_new_string("http"));
         json_object_object_add(resource,"url",json_object_new_string(url));
@@ -50,7 +51,7 @@ static bool compatible(json_object *a, json_object *b) {
 }
 
 static bool native_enabled(const char *agent, json_object *native) {
-    if (!strcmp(agent,"opencode")) return !json_object_get_boolean(km_get(native,"disabled"));
+    if (!strcmp(agent,"opencode") || !strcmp(agent,"antigravity")) return !json_object_get_boolean(km_get(native,"disabled"));
     return !km_get(native,"enabled") || json_object_get_boolean(km_get(native,"enabled"));
 }
 
@@ -122,7 +123,7 @@ static int adopt(AdRun *run, AdFile *file, const char *agent, const char *id, co
 
 static const char *entry_id(const char *agent, const char *key) {
     if (!strcmp(agent,"codex")) return key;
-    const char *prefix=!strcmp(agent,"claude") ? "mcpServers/" : "mcp/servers/";
+    const char *prefix=!strcmp(agent,"opencode") ? "mcp/servers/" : "mcpServers/";
     return strncmp(key,prefix,strlen(prefix)) ? NULL : key+strlen(prefix);
 }
 
@@ -151,7 +152,7 @@ static json_object *native_ids(AdRun *run, AdFile *file, const char *agent) {
         return ids;
     }
     json_object *doc=ad_parse(run->km,file->text), *ids=json_object_new_array();
-    json_object *servers=!strcmp(agent,"claude") ? km_get(doc,"mcpServers") : km_get(km_get(doc,"mcp"),"servers");
+    json_object *servers=strcmp(agent,"opencode") ? km_get(doc,"mcpServers") : km_get(km_get(doc,"mcp"),"servers");
     if (servers) {
         json_object_object_foreach(servers,id,value) { (void)value; json_object_array_add(ids,json_object_new_string(id)); }
     }

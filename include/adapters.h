@@ -9,6 +9,7 @@ typedef struct AdFile {
     char *text;
     bool existed;
     bool toml;
+    bool remove; /* delete the file instead of writing text */
     struct AdFile *next;
 } AdFile;
 
@@ -41,6 +42,7 @@ void ad_note(AdRun *run, const char *format, ...) __attribute__((format(printf, 
 void ad_flush(AdRun *run);
 void ad_drop_files(AdRun *run, const char *agent);
 void ad_mcp_key(char *key, size_t size, const char *agent, const char *id);
+void ad_drop_empty(json_object *native);
 AdFile *ad_file(AdRun *run, const char *agent, const char *relative, bool toml);
 int ad_change(AdRun *run, AdFile *file, const char *key, const char *desired, bool adopt);
 int ad_finish(AdRun *run);

@@ -105,7 +105,7 @@ class McpTests(AntigravityCase):
 
     def test_claude_sse_endpoint_is_refused_for_antigravity(self):
         self.write(".claude.json", json.dumps({"mcpServers": {"events": {"type": "sse", "url": "https://sse.invalid/sse"}}}))
-        self.cli("import", "--from", "claude", "--apply")
+        self.cli("import", "--from", "claude,antigravity", "--apply")
         result = self.cli("mcp", "enable", "events", "--agent", "antigravity", ok=False)
         self.assertIn("SSE", result.stderr)
         self.assertIn("antigravity", result.stderr)
@@ -175,12 +175,15 @@ class SkillTests(AntigravityCase):
         root.mkdir(parents=True)
         (root / "review").symlink_to(first)
         (root / "lint").symlink_to(second)
-        self.write(MANIFEST, json.dumps({"exclude": ["lint"]}))
+        manifest = self.write(MANIFEST, json.dumps({"exclude": ["lint"]}))
         self.cli("import", "--from", "antigravity", "--apply")
         skills = self.catalog()["skills"]
         self.assertEqual(skills["review"]["agents"]["antigravity"], "on")
         self.assertEqual(skills["lint"]["agents"]["antigravity"], "off")
+        self.cli("sync", "--apply", "--agent", "antigravity")
         self.cli("sync", "--check")
+        self.assertEqual(os.readlink(root / "review"), skills["review"]["path"])
+        self.assertEqual(json.loads(manifest.read_text()), {"exclude": ["lint"]})
 
 
 class SubagentTests(AntigravityCase):

@@ -238,7 +238,11 @@ static json_object *summary(json_object *resource, bool detail) {
 
 static int list(Km *km, bool as_json) {
     json_object *resources = km_resources(km, "subagent"), *result = json_object_new_object();
-    if (!as_json) printf("%-24s %-5s %-8s %-8s %-8s\n", "SUBAGENT", "STATE", "CODEX", "CLAUDE", "OPENCODE");
+    if (!as_json) {
+        printf("%-24s %-5s", "SUBAGENT", "STATE");
+        for (size_t i = 0; i < KM_AGENT_COUNT; i++) printf(" %-8s", km_agents[i]);
+        putchar('\n');
+    }
     json_object_object_foreach(resources, id, resource) {
         if (as_json) json_object_object_add(result, id, summary(resource, false));
         else {

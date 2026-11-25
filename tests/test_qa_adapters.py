@@ -322,6 +322,12 @@ class PreservationTests(NativeSyncCase):
 
 
 class MessageTests(NativeSyncCase):
+    def test_invalid_subagent_journal_keeps_its_specific_error(self):
+        self.write(self.journal, json.dumps({"version": 2, "files": {}, "subagent_files": {"/outside": {}}}))
+        result = self.cli("sync", "--check", ok=False)
+        self.assertIn("subagent", result.stderr.lower())
+        self.assertNotIn("invalid or unsafe adapter ownership record", result.stderr)
+
     def test_non_object_native_json_names_its_file(self):
         self.native_clients(codex=None, claude=None, opencode=None)
         self.write(self.claude, "[]\n")

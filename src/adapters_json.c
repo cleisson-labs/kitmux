@@ -260,14 +260,18 @@ int ad_json_edit(Km *km, char **text, const char *path, const char *value) {
     return edit_path(km,text,path,value,"");
 }
 
+/* Comparison never fails a run: text that does not parse simply differs. */
 bool ad_same(Km *km, const char *a, const char *b, bool toml) {
     if (!a || !b) return a==b;
     if (!strcmp(a,b)) return true;
+    char saved[sizeof(km->error)];
+    memcpy(saved,km->error,sizeof(saved));
     json_object *left=toml ? ad_toml_parse(km,a) : ad_parse(km,a);
     json_object *right=toml ? ad_toml_parse(km,b) : ad_parse(km,b);
     bool same=left && right && json_object_equal(left,right);
     if (left) json_object_put(left);
     if (right) json_object_put(right);
+    memcpy(km->error,saved,sizeof(saved));
     return same;
 }
 

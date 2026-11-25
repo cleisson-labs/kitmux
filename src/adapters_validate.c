@@ -101,7 +101,7 @@ int ad_validate_state(Km *km, json_object *state) {
         }
     }
     if (!links_valid(km,km_get(state,"links"))) goto invalid;
-    if (ad_subagent_state_valid(km,state)<0) goto invalid;
+    if (ad_subagent_state_valid(km,state)<0) return -1;
     if (!agent_flags_valid(km_get(state,"managed_agents")) ||
         !agent_flags_valid(km_get(state,"subagent_agents"))) goto invalid;
     return 0;

@@ -98,9 +98,12 @@ static json_object *without_default(Km *km, const AdFile *file, const char *raw)
 
 bool ad_entry_same(Km *km, const AdFile *file, const char *key, const char *a, const char *b) {
     if (!a || !b || !strcmp(a,b) || !mcp_entry(file,key)) return ad_same(km,a,b,file->toml);
+    char saved[sizeof(km->error)];
+    memcpy(saved,km->error,sizeof(saved));
     json_object *left=without_default(km,file,a), *right=without_default(km,file,b);
     bool same=left && right && json_object_equal(left,right);
-    json_object_put(left); json_object_put(right); return same;
+    json_object_put(left); json_object_put(right);
+    memcpy(km->error,saved,sizeof(saved)); return same;
 }
 
 static bool owned(json_object *record) {

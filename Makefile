@@ -23,7 +23,7 @@ $(BUILD)/test_runtime_stop: tests/fixtures/runtime_stop.c $(filter-out $(BUILD)/
 test: all $(BUILD)/test_runtime_stop
 	KITMUX_BINARY=$(CURDIR)/$(BUILD)/kitmux $(PYTHON) -m unittest discover -s tests -p 'test_*.py' -v
 test-native: all
-	KITMUX_NATIVE_TESTS=1 KITMUX_BINARY=$(CURDIR)/$(BUILD)/kitmux PYTHONPATH=$(CURDIR)/tests $(PYTHON) -m unittest test_client_compatibility test_subagent_native_codex test_subagent_native_claude test_subagent_native_opencode -v
+	KITMUX_NATIVE_TESTS=1 KITMUX_BINARY=$(CURDIR)/$(BUILD)/kitmux PYTHONPATH=$(CURDIR)/tests $(PYTHON) -m unittest test_client_compatibility test_subagent_native_codex test_subagent_native_claude test_subagent_native_opencode test_antigravity_native -v
 sanitize:
 	$(MAKE) BUILD=$(SANITIZE_BUILD) CFLAGS='-std=c17 -D_POSIX_C_SOURCE=200809L -D_DARWIN_C_SOURCE -Wall -Wextra -Wpedantic -g -O1 -fsanitize=address,undefined -fno-omit-frame-pointer' LDFLAGS='-fsanitize=address,undefined' test
 analyze:

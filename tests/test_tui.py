@@ -231,7 +231,7 @@ class TerminalTests(TerminalTestCase):
         terminal.send(b"3n")
         terminal.wait_text("Subagent name")
         terminal.send(b"\x1b4")
-        terminal.wait_text("Separate configuration")
+        terminal.wait_text("adoption and native configuration state")
         terminal.send(b"5")
         terminal.wait_text("Runtime snapshot")
         terminal.send(b"q")
@@ -273,8 +273,8 @@ class TerminalTests(TerminalTestCase):
         terminal.send(b"q")
         self.assertEqual(terminal.wait_exit(), 0)
         catalog = json.loads((self.home / ".config/kitmux/catalog.json").read_text())
-        self.assertEqual(catalog["subagents"]["reviewer"]["agents"],
-                         {"codex": "off", "claude": "on", "opencode": "off"})
+        # The dialog writes only changed clients; unchanged ones keep inheriting (no assignment = off).
+        self.assertEqual(catalog["subagents"]["reviewer"]["agents"], {"claude": "on"})
         self.assertEqual(catalog["subagents"]["reviewer-copy"]["agents"], {})
         self.assertIn("failure handling", catalog["subagents"]["reviewer"]["instructions"])
 
@@ -292,8 +292,7 @@ class TerminalTests(TerminalTestCase):
         terminal.send(b"q")
         self.assertEqual(terminal.wait_exit(), 0)
         catalog = json.loads((self.home / ".config/kitmux/catalog.json").read_text())
-        self.assertEqual(catalog["subagents"]["reviewer"]["agents"],
-                         {"codex": "off", "claude": "on", "opencode": "off"})
+        self.assertEqual(catalog["subagents"]["reviewer"]["agents"], {"claude": "on"})
         self.assertTrue((self.home / ".claude/agents/reviewer.md").is_file())
         self.assertFalse((self.home / ".codex/agents/reviewer.toml").exists())
         self.assertFalse((self.home / ".config/opencode/agents/reviewer.md").exists())

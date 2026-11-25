@@ -159,7 +159,8 @@ void ui_add(KmUi *ui, bool editing) {
     char *group = selected && selected->group ? strdup(selected->group) : NULL;
     json_object *before = json_object_get(km_resources(ui->km, ui_kind(ui)));
     if (ui->tab == UI_MCPS) mcp_form(ui, editing);
-    else if (ui->tab == UI_SKILLS && !editing) skill_form(ui);
+    else if (ui->tab == UI_SKILLS && editing) ui_notice(ui, "Skills change with u (update) or b (rollback); d removes.");
+    else if (ui->tab == UI_SKILLS) skill_form(ui);
     else if (ui->tab == UI_SUBAGENTS) subagent_form(ui, editing);
     else ui_notice(ui, "Select MCPs, Skills, or Subagents to add an item.");
     json_object_object_foreach(km_resources(ui->km, ui_kind(ui)), id, item) {

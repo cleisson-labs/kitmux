@@ -20,6 +20,8 @@ typedef struct {
     char error[1024];
     int lock_fd;
     bool isolated;
+    /* Set when a mutation saved the catalog but automatic native sync failed. */
+    bool sync_pending;
     json_object *catalog;
 } Km;
 
@@ -44,6 +46,8 @@ json_object *km_resources(Km *km, const char *kind);
 json_object *km_mcp_execution(json_object *server, const char *agent);
 bool km_effective(Km *km, const char *kind, const char *id, const char *agent,
                   char *reason, size_t reason_size);
+/* Client assignment (direct or group) ignoring global OFF and native compatibility. */
+bool km_assigned(Km *km, const char *kind, const char *id, const char *agent);
 int km_resource_toggle(Km *km, const char *kind, int argc, char **argv);
 int km_remove_resource(Km *km, const char *kind, const char *id);
 int km_dispatch(Km *km, int argc, char **argv);

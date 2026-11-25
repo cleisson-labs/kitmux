@@ -13,6 +13,12 @@ static bool configured(AdRun *run, const char *agent) {
     return false;
 }
 
+bool ad_client_configured(Km *km, const char *agent) {
+    AdRun run;
+    bool result=ad_open(&run,km,false)==0 && configured(&run,agent);
+    ad_cleanup(&run); return result;
+}
+
 static int selected(Km *km, const char *csv, bool flags[KM_AGENT_COUNT]) {
     for (int i=0;i<KM_AGENT_COUNT;i++) flags[i]=!csv;
     if (!csv) return 0;

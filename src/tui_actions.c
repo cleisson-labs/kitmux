@@ -50,7 +50,7 @@ bool ui_confirm(KmUi *ui, const char *message) {
     dialog_title("Confirm change"); mvaddnstr(5, 3, message, COLS - 6);
     mvaddstr(8, 3, "y: confirm   any other key: cancel"); refresh();
     int key;
-    do { key = getch(); } while (key == ERR && !km_ui_interrupted);
+    do { key = getch(); } while ((key == ERR || key == KEY_RESIZE) && !km_ui_interrupted);
     (void)ui; return key == 'y' || key == 'Y';
 }
 
@@ -74,36 +74,55 @@ int ui_choice(const char *title, const char *const *choices, int count, int init
     return -1;
 }
 
-int ui_command(KmUi *ui, int argc, char **argv) {
-    ui->output[0] = '\0'; ui->truncated = false;
+/* Runs one Kitmux command in-process with stdout/stderr captured, so curses output stays intact. */
+int ui_capture(KmUi *ui, int argc, char **argv, char *output, size_t size, bool *truncated) {
+    output[0] = '\0'; *truncated = false;
     FILE *capture = tmpfile();
-    if (!capture) { ui_notice(ui, "Cannot capture command output: %s", strerror(errno)); return -1; }
+    if (!capture) return km_error(ui->km, "Cannot capture command output: %s", strerror(errno));
     fflush(stdout); fflush(stderr);
     int out = dup(STDOUT_FILENO), err = dup(STDERR_FILENO);
     if (out < 0 || err < 0) {
         int saved = errno;
-        if (out >= 0) close(out); if (err >= 0) close(err); fclose(capture);
-        ui_notice(ui, "Cannot capture command output: %s", strerror(saved)); return -1;
+        if (out >= 0) close(out);
+        if (err >= 0) close(err);
+        fclose(capture); return km_error(ui->km, "Cannot capture command output: %s", strerror(saved));
     }
     if (dup2(fileno(capture), STDOUT_FILENO) < 0 || dup2(fileno(capture), STDERR_FILENO) < 0) {
         int saved = errno;
         dup2(out, STDOUT_FILENO); dup2(err, STDERR_FILENO); close(out); close(err); fclose(capture);
-        ui_notice(ui, "Cannot redirect command output: %s", strerror(saved)); return -1;
+        return km_error(ui->km, "Cannot redirect command output: %s", strerror(saved));
     }
-    ui->km->error[0] = '\0';
     int result = km_dispatch(ui->km, argc, argv);
     fflush(stdout); fflush(stderr); dup2(out, STDOUT_FILENO); dup2(err, STDERR_FILENO); close(out); close(err);
     rewind(capture);
-    size_t length = fread(ui->output, 1, sizeof(ui->output) - 1, capture);
-    ui->output[length] = '\0'; ui->truncated = fgetc(capture) != EOF;
-    for (size_t i = 0; i < length; i++) if (!isprint((unsigned char)ui->output[i]) && ui->output[i] != '\n' && ui->output[i] != '\t') ui->output[i] = ' ';
-    char output[256] = "";
-    size_t first = strcspn(ui->output, "\n");
-    snprintf(output, sizeof(output), "%.*s", (int)(first < sizeof(output) - 1 ? first : sizeof(output) - 1), ui->output);
+    size_t length = fread(output, 1, size - 1, capture);
+    output[length] = '\0'; *truncated = fgetc(capture) != EOF;
+    for (size_t i = 0; i < length; i++) if (!isprint((unsigned char)output[i]) && output[i] != '\n' && output[i] != '\t') output[i] = ' ';
     fclose(capture);
-    if (result) ui_notice(ui, "%.480s", *ui->km->error ? ui->km->error : "Action failed; run the CLI for details.");
-    else ui_notice(ui, "%s", *output ? output : "Saved. Use s to adopt clients if not configured.");
+    return result;
+}
+
+static void command_notice(KmUi *ui, int result) {
+    size_t first = strcspn(ui->output, "\n"), lines = 0;
+    for (const char *c = ui->output; *c; c++) if (*c == '\n' && c[1]) lines++;
+    char line[256];
+    snprintf(line, sizeof(line), "%.*s", (int)(first < sizeof(line) - 1 ? first : sizeof(line) - 1), ui->output);
+    if (result) ui_notice(ui, "%.480s", *ui->km->error ? ui->km->error : *line ? line : "Action failed; run the CLI for details.");
+    else if (!*line) ui_notice(ui, "Saved.");
+    else if (lines) ui_notice(ui, "%s (+%zu more lines)", line, lines);
+    else ui_notice(ui, "%s", line);
+}
+
+int ui_command(KmUi *ui, int argc, char **argv) {
+    int result = ui_capture(ui, argc, argv, ui->output, sizeof(ui->output), &ui->truncated);
+    ui->sync_deferred = result && ui->km->sync_pending;
+    command_notice(ui, result);
+    if (ui->sync_deferred) snprintf(ui->sync_error, sizeof(ui->sync_error), "%s", ui->km->error);
+    char error[sizeof(ui->km->error)]; snprintf(error, sizeof(error), "%s", ui->km->error);
     if (km_load(ui->km) < 0) ui_notice(ui, "%.480s", ui->km->error);
+    else if (!ui->sync_deferred) ui_check_sync(ui);
+    snprintf(ui->km->error, sizeof(ui->km->error), "%s", error);
+    ui->rows_stale = true; ui_catalog_changed(ui);
     return result;
 }
 
@@ -149,27 +168,46 @@ bool ui_review(KmUi *ui, const char *title) { return review_output(ui, title); }
 
 void ui_view(KmUi *ui, const char *title) { ui_document_view(ui, title, ui->output, false); }
 
-static void toggle_items(KmUi *ui, bool removing) {
-    if (ui->tab >= UI_CLIENTS || !ui_current(ui)) return;
-    bool marked = json_object_object_length(ui->marks) > 0;
-    const char *confirmation = !marked && ui_group_selected(ui) ?
-        "Remove this group? Members remain installed." : "Remove selected groups/items? Group members remain installed.";
-    if (removing && !ui_confirm(ui, confirmation)) return;
-    json_object *seen = json_object_new_object();
-    for (int i = 0; i < ui->count; i++) {
-        const KmUiRow *row = &ui->rows[i]; char key[80]; ui_mark_key(row, key, sizeof(key));
-        if (row->type == UI_UNGROUPED || km_get(seen, key) ||
-            (marked ? !km_get(ui->marks, key) : i != ui->row)) continue;
-        json_object_object_add(seen, key, json_object_new_boolean(true));
-        json_object *item = row->type == UI_GROUP ? ui_group_item(ui, row->id) : ui_item(ui, row->id);
-        json_object *flag = km_get(item, "enabled");
-        char *verb = removing ? "remove" : (!flag || json_object_get_boolean(flag) ? "disable" : "enable");
-        char *args[] = {(char *)ui_kind(ui), "group", verb, row->id};
-        if (row->type == UI_RESOURCE) { args[1] = verb; args[2] = row->id; }
-        if (ui_command(ui, row->type == UI_GROUP ? 4 : 3, args)) break;
+static int toggle_target(KmUi *ui, const char *key, bool removing, int *done) {
+    bool group = key[0] == 'g'; const char *id = key + 2;
+    json_object *item = group ? ui_group_item(ui, id) : ui_item(ui, id);
+    if (!item) return 0;
+    json_object *flag = km_get(item, "enabled");
+    char *verb = removing ? "remove" : (!flag || json_object_get_boolean(flag) ? "disable" : "enable");
+    char *args[] = {(char *)ui_kind(ui), "group", verb, (char *)id};
+    if (!group) { args[1] = verb; args[2] = (char *)id; }
+    int result = ui_command(ui, group ? 4 : 3, args);
+    if (!result || ui->sync_deferred) {
+        (*done)++;
+        if (!ui->sync_deferred) ui_notice(ui, "Saved: %s %sd.", id, verb);
     }
-    json_object_put(seen);
-    json_object_put(ui->marks); ui->marks = json_object_new_object(); ui_rebuild(ui);
+    return result && !ui->sync_deferred ? -1 : 0;
+}
+
+/* Marked rows hidden by a collapsed group or search are still selected, so act on
+ * the marks themselves rather than the visible rows. */
+static void toggle_items(KmUi *ui, bool removing) {
+    if (ui->tab >= UI_CLIENTS) return;
+    size_t marked = (size_t)json_object_object_length(ui->marks);
+    if (!marked && !ui_current(ui)) return;
+    char confirmation[128];
+    if (marked) snprintf(confirmation, sizeof(confirmation), "Remove %zu selected groups/items? Group members remain installed.", marked);
+    else snprintf(confirmation, sizeof(confirmation), "%s", ui_group_selected(ui) ? "Remove this group? Members remain installed." : "Remove this item?");
+    if (removing && !ui_confirm(ui, confirmation)) return;
+    json_object *targets = json_object_get(ui->marks);
+    if (!marked) {
+        json_object_put(targets); targets = json_object_new_object();
+        char key[80]; ui_mark_key(ui_current_row(ui), key, sizeof(key));
+        json_object_object_add(targets, key, json_object_new_boolean(true));
+    }
+    int done = 0;
+    json_object_object_foreach(targets, key, value) {
+        (void)value;
+        if (toggle_target(ui, key, removing, &done) < 0) break;
+    }
+    json_object_put(targets);
+    if (done > 1 && !*ui->sync_error) ui_notice(ui, "Saved: %d items updated.", done);
+    json_object_put(ui->marks); ui->marks = json_object_new_object(); ui->rows_stale = true;
 }
 
 static bool has_agent(json_object *array, const char *agent) {
@@ -178,50 +216,73 @@ static bool has_agent(json_object *array, const char *agent) {
     return false;
 }
 
-void ui_assign(KmUi *ui) {
-    const char *current = ui_current(ui);
-    if (ui->tab >= UI_CLIENTS || !current) return;
-    char *id = strdup(current);
-    if (!id) return;
-    bool choices[KM_AGENT_COUNT]; int row = 0;
-    bool group = ui_group_selected(ui);
-    for (int a = 0; a < KM_AGENT_COUNT; a++) choices[a] = group ? has_agent(km_get(ui_group_item(ui, id), "agents"), km_agents[a]) : km_effective(ui->km, ui_kind(ui), id, km_agents[a], NULL, 0);
-    int key = 0;
+static bool assign_dialog(KmUi *ui, const char *id, bool group, bool globally_off, bool *choices) {
+    int row = 0;
     while (!km_ui_interrupted) {
-        if (!ui_modal_ready()) { free(id); return; }
+        if (!ui_modal_ready()) return false;
         dialog_title("Assign agents"); mvprintw(5, 3, "%s", id);
-        if (!group) mvaddstr(6, 3, "Explicit overrides; use CLI inherit to follow groups again.");
-        else mvaddstr(6, 3, "Only this resource type; individual OFF overrides still win.");
+        mvaddstr(6, 3, group ? "Only this resource type; individual OFF overrides still win." :
+                 "Changed rows become explicit overrides; unchanged rows keep inheriting.");
         for (int a = 0; a < KM_AGENT_COUNT; a++) {
             bool compatible = group || ui->tab != UI_SUBAGENTS || km_subagent_compatible(ui_item(ui, id), km_agents[a], NULL, 0);
             mvprintw(7 + a, 3, "%c [%c] %s%s", row == a ? '>' : ' ', choices[a] ? 'x' : ' ', km_agents[a], compatible ? "" : " (native variant required)");
         }
-        mvprintw(12, 3, "j/k move   Space toggle   Enter save   Esc cancel"); refresh(); key = getch();
-        if (key == 27) { free(id); return; }
-        if (key == '\n' || key == KEY_ENTER) break;
+        if (globally_off) mvaddstr(10, 3, "Globally OFF: choices take effect after e enables this item.");
+        mvprintw(12, 3, "j/k move   Space toggle   Enter save   Esc cancel"); refresh();
+        int key = getch();
+        if (key == 27) return false;
+        if (key == '\n' || key == KEY_ENTER) return true;
         if (key == KEY_DOWN || key == 'j') row = (row + 1) % KM_AGENT_COUNT;
         if (key == KEY_UP || key == 'k') row = (row + KM_AGENT_COUNT - 1) % KM_AGENT_COUNT;
         if (key == ' ') choices[row] = !choices[row];
     }
-    if (km_ui_interrupted) { free(id); return; }
-    int result = 0;
+    return false;
+}
+
+static int save_assignments(KmUi *ui, const char *id, bool group, const bool *before, const bool *choices, int *changes) {
     if (group) {
+        if (!memcmp(before, choices, sizeof(bool) * KM_AGENT_COUNT)) return 0;
         char csv[64] = "";
         for (int a = 0; a < KM_AGENT_COUNT; a++) if (choices[a]) { if (*csv) strcat(csv, ","); strcat(csv, km_agents[a]); }
-        char *args[] = {(char *)ui_kind(ui), "group", "assign", id, "--agents", csv}; result = ui_command(ui, 6, args);
-    } else for (int a = 0; a < KM_AGENT_COUNT && !result; a++) {
-        char *args[] = {(char *)ui_kind(ui), choices[a] ? "enable" : "disable", id, "--agent", (char *)km_agents[a]};
-        result = ui_command(ui, 5, args);
+        char *args[] = {(char *)ui_kind(ui), "group", "assign", (char *)id, "--agents", csv};
+        (*changes)++; return ui_command(ui, 6, args);
     }
-    if (!result) ui_notice(ui, "Assignments saved. Adopt clients with s; agent reload may be required.");
-    free(id); ui_rebuild(ui);
+    int result = 0;
+    for (int a = 0; a < KM_AGENT_COUNT; a++) {
+        if (choices[a] == before[a]) continue;
+        char *args[] = {(char *)ui_kind(ui), choices[a] ? "enable" : "disable", (char *)id, "--agent", (char *)km_agents[a]};
+        (*changes)++; result = ui_command(ui, 5, args);
+        if (result && !ui->sync_deferred) return result;
+    }
+    return result;
+}
+
+/* Seeds from assignments (ignoring global OFF) and writes only rows the user changed,
+ * so unchanged clients keep following their groups. */
+void ui_assign(KmUi *ui) {
+    const char *current = ui_current(ui);
+    if (ui->tab >= UI_CLIENTS || !current) return;
+    char id[65]; snprintf(id, sizeof(id), "%s", current);
+    bool group = ui_group_selected(ui), before[KM_AGENT_COUNT], choices[KM_AGENT_COUNT];
+    json_object *item = group ? ui_group_item(ui, id) : ui_item(ui, id), *flag = km_get(item, "enabled");
+    bool globally_off = !group && flag && !json_object_get_boolean(flag);
+    for (int a = 0; a < KM_AGENT_COUNT; a++)
+        before[a] = choices[a] = group ? has_agent(km_get(item, "agents"), km_agents[a]) : km_assigned(ui->km, ui_kind(ui), id, km_agents[a]);
+    if (!assign_dialog(ui, id, group, globally_off, choices)) return;
+    int changes = 0, result = save_assignments(ui, id, group, before, choices, &changes);
+    if (!changes) ui_notice(ui, "Assignments unchanged.");
+    else if (!result) ui_notice(ui, "Assignments saved. Agent reload may be required.");
+    else if (ui->sync_deferred) ui_notice(ui, "Assignments saved; native sync pending (see the banner or Clients tab).");
+    ui->rows_stale = true;
 }
 
 static void show_help(KmUi *ui) {
     if (!ui_modal_ready()) return;
     dialog_title("Kitmux keyboard shortcuts");
     const char *lines[] = {"1-5 / Tab   MCPs, Skills, Subagents, Clients, Status", "j/k / arrows   Move selection or scroll Status", "Enter / Left / Right   Expand groups; Enter shows item details", "Space   Select rows; repeated items are selected once", "e Toggle availability   a Assign clients   v Open details", "g New group  n Add item  x Edit/rename  d Remove", "m Group members or item groups   / Search   Esc Clear/cancel", "r Reconnect MCP   s Preview/adopt native configuration", "i Import (Subagents: profiles only)  p Duplicate subagent", "u Preview/apply skill update   b Roll back skill", "f Capture Status observation   c Doctor   q Quit", "", "Group clients show effective availability; [-] means mixed.", "Another group can enable an item. Explicit/global OFF wins.", "Your coding agent may still need a refresh or reload.", "Press any key to return."};
-    for (size_t i = 0; i < sizeof(lines) / sizeof(*lines) && (int)i + 5 < LINES - 1; i++) mvaddnstr(5 + (int)i, 3, lines[i], COLS - 6);
+    size_t count = sizeof(lines) / sizeof(*lines);
+    for (size_t i = 0; i + 1 < count && (int)i + 5 < LINES - 3; i++) mvaddnstr(5 + (int)i, 3, lines[i], COLS - 6);
+    mvaddnstr(LINES - 2, 3, lines[count - 1], COLS - 6);
     refresh(); while (getch() == ERR && !km_ui_interrupted) {} (void)ui;
 }
 
@@ -248,8 +309,9 @@ void ui_action(KmUi *ui, int key) {
     else if (key == 'p') ui_duplicate(ui);
     else if (key == 'r') ui_reconnect(ui);
     else if (key == 'f' && ui->tab == UI_STATUS) ui_refresh_status(ui);
+    else if (key == 'f' && ui->tab == UI_CLIENTS) { ui_clients_refresh(ui); ui_notice(ui, "Client state refreshed."); }
     else if (key == 's' || key == 'i') ui_sync(ui, key == 'i');
     else if (key == 'u' || key == 'b') skill_action(ui, key == 'b');
-    else if (key == 'c') { char *args[] = {"doctor"}; ui_command(ui, 1, args); }
+    else if (key == 'c') { char *args[] = {"doctor"}; ui_command(ui, 1, args); ui_view(ui, "Configuration doctor"); }
     else if (key == '?') show_help(ui);
 }

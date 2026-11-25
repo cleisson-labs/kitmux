@@ -23,8 +23,23 @@ static void draw_tabs(KmUi *ui) {
     mvhline(4, 2, ACS_HLINE, COLS - 4);
 }
 
+static size_t array_length(json_object *array) {
+    return json_object_is_type(array, json_type_array) ? json_object_array_length(array) : 0;
+}
+
+/* Wider terminals show longer IDs; the minimum keeps the 74-column layout intact. */
+static int name_width(void) {
+    int width = COLS - 45;
+    return width < 22 ? 22 : width > 64 ? 64 : width;
+}
+
+static void draw_name(int y, int x, const char *name, int width) {
+    if ((int)strlen(name) <= width) mvprintw(y, x, "%-*s", width, name);
+    else mvprintw(y, x, "%.*s~", width - 1, name);
+}
+
 static size_t row_member_count(KmUi *ui, const KmUiRow *row) {
-    if (row->type == UI_GROUP) return json_object_array_length(km_get(ui_group_item(ui, row->id), "members"));
+    if (row->type == UI_GROUP) return array_length(km_get(ui_group_item(ui, row->id), "members"));
     size_t count = 0;
     json_object_object_foreach(km_resources(ui->km, ui_kind(ui)), id, item) {
         (void)item; bool grouped = false;
@@ -34,7 +49,7 @@ static size_t row_member_count(KmUi *ui, const KmUiRow *row) {
             if (!kind || strcmp(kind, ui_kind(ui))) continue;
             json_object *members = km_get(group, "members");
             char reference[80]; snprintf(reference, sizeof(reference), "%s:%s", kind, id);
-            for (size_t m = 0; m < json_object_array_length(members); m++)
+            for (size_t m = 0; m < array_length(members); m++)
                 if (!strcmp(json_object_get_string(json_object_array_get_idx(members, m)), reference)) grouped = true;
         }
         if (!grouped) count++;
@@ -43,7 +58,7 @@ static size_t row_member_count(KmUi *ui, const KmUiRow *row) {
 }
 
 static char group_client_state(KmUi *ui, json_object *group, const char *agent) {
-    json_object *members = km_get(group, "members"); size_t on = 0, count = json_object_array_length(members);
+    json_object *members = km_get(group, "members"); size_t on = 0, count = array_length(members);
     for (size_t i = 0; i < count; i++) {
         const char *reference = json_object_get_string(json_object_array_get_idx(members, i));
         const char *id = strchr(reference, ':');
@@ -62,21 +77,24 @@ static void draw_row(KmUi *ui, int i, int y) {
     if (style) attron(style);
     mvhline(y, 2, ' ', COLS - 4);
     char key[80]; ui_mark_key(row, key, sizeof(key));
-    if (row->type == UI_RESOURCE)
-        mvprintw(y, 2, "%c %c   %-22.22s %-5s", i == ui->row ? '>' : ' ', km_get(ui->marks, key) ? '*' : ' ', id, enabled ? "ON" : "OFF");
-    else {
+    int width = name_width();
+    mvprintw(y, 2, "%c %c", i == ui->row ? '>' : ' ', row->type != UI_UNGROUPED && km_get(ui->marks, key) ? '*' : ' ');
+    if (row->type == UI_RESOURCE) {
+        draw_name(y, 8, id, width);
+        mvprintw(y, 9 + width, "%-5s", enabled ? "ON" : "OFF");
+    } else {
         char label[96]; snprintf(label, sizeof(label), "%c %s (%zu)", ui_is_collapsed(ui, row) ? '>' : 'v', id, row_member_count(ui, row));
         bool mixed = false;
         for (int a = 0; row->type == UI_GROUP && a < KM_AGENT_COUNT; a++)
             if (group_client_state(ui, item, km_agents[a]) == '-') mixed = true;
-        mvprintw(y, 2, "%c %c %-26.26s %-5s", i == ui->row ? '>' : ' ', km_get(ui->marks, key) ? '*' : ' ', label,
-                   row->type == UI_UNGROUPED ? "" : !enabled ? "OFF" : mixed ? "MIX" : "ON");
+        draw_name(y, 6, label, width + 2);
+        mvprintw(y, 9 + width, "%-5s", row->type == UI_UNGROUPED ? "" : !enabled ? "OFF" : mixed ? "MIX" : "ON");
     }
     for (int a = 0; row->type != UI_UNGROUPED && a < KM_AGENT_COUNT; a++) {
         char marker = row->type == UI_GROUP ? group_client_state(ui, item, km_agents[a]) :
                       km_effective(ui->km, ui_kind(ui), id, km_agents[a], NULL, 0) ? 'x' : ' ';
         if (row->type == UI_RESOURCE && ui->tab == UI_SUBAGENTS && !km_subagent_compatible(item, km_agents[a], NULL, 0)) marker = '!';
-        mvprintw(y, 40 + a * 10, "[%c]", marker);
+        mvprintw(y, 18 + width + a * 10, "[%c]", marker);
     }
     if (style) attroff(style);
 }
@@ -108,12 +126,9 @@ static void draw_details(KmUi *ui, int start) {
 }
 
 static void draw_clients(KmUi *ui) {
-    for (int i = 0; i < KM_AGENT_COUNT; i++) {
-        attron(A_BOLD); mvprintw(6 + i * 3, 3, "%s", km_agents[i]); attroff(A_BOLD);
-        mvprintw(7 + i * 3, 5, "Separate configuration, resource availability, and permissions");
-    }
-    mvprintw(17, 3, "s: preview native changes   i: preview import   c: run doctor");
-    (void)ui;
+    mvaddstr(6, 3, "Native clients | adoption and native configuration state");
+    mvhline(7, 3, ACS_HLINE, COLS - 6);
+    ui_text_lines(ui->clients, 8, LINES - 14, 0);
 }
 
 void ui_refresh_status(KmUi *ui) {
@@ -143,20 +158,31 @@ void ui_draw(KmUi *ui) {
     attron(A_BOLD | (ui->colors ? COLOR_PAIR(1) : 0)); mvaddstr(1, 2, "kitmux");
     attroff(A_BOLD | (ui->colors ? COLOR_PAIR(1) : 0));
     mvaddstr(1, 18, "MCPs, skills, and subagents. Your choice of clients.");
+    if (*ui->sync_error) {
+        attron(A_BOLD | (ui->colors ? COLOR_PAIR(1) : 0));
+        mvprintw(2, 2, "! Native sync pending (4: Clients): %.*s", COLS > 40 ? COLS - 40 : 1, ui->sync_error);
+        attroff(A_BOLD | (ui->colors ? COLOR_PAIR(1) : 0));
+    }
     draw_tabs(ui);
     if (ui->tab < UI_CLIENTS) {
-        mvprintw(6, 6, "%-24s %-5s  CODEX     CLAUDE    OPENCODE", tabs[ui->tab], "STATE");
+        int width = name_width();
+        mvprintw(6, 6, "%s", tabs[ui->tab]); mvprintw(6, 9 + width, "STATE");
+        mvprintw(6, 16 + width, "CODEX     CLAUDE    OPENCODE");
         int visible = ui->details ? (LINES - 15) / 2 : LINES - 13;
         if (ui->row >= ui->top + visible) ui->top = ui->row - visible + 1;
         for (int i = ui->top; i < ui->count && i < ui->top + visible; i++) draw_row(ui, i, 8 + i - ui->top);
-        if (!ui->count) mvprintw(9, 4, "Nothing here yet. Press n to add, or i to import.");
+        if (!ui->count && *ui->filter) mvprintw(9, 4, "No matches for \"%.40s\". Esc clears the search.", ui->filter);
+        else if (!ui->count) mvprintw(9, 4, "Nothing here yet. Press n to add, or i to import.");
         if (ui->details) draw_details(ui, 8 + visible);
     } else if (ui->tab == UI_CLIENTS) draw_clients(ui); else draw_status(ui);
     if (*ui->filter && ui->tab < UI_CLIENTS) mvprintw(LINES - 5, 2, "Filter: %.100s", ui->filter);
+    size_t marked = (size_t)json_object_object_length(ui->marks);
+    if (marked && ui->tab < UI_CLIENTS) mvprintw(LINES - 5, COLS - 22, "%zu selected", marked);
     mvhline(LINES - 4, 2, ACS_HLINE, COLS - 4);
     const char *actions = ui->tab == UI_STATUS ? "j/k scroll  f capture observation  s sync  c doctor" :
+                          ui->tab == UI_CLIENTS ? "s preview sync  i preview import  c doctor  f refresh" :
                           "Enter expand/details  Space select  e toggle  a clients  m groups/members";
-    const char *navigation = ui->tab == UI_STATUS ? "1-5 tabs  ? help  q quit" :
+    const char *navigation = ui->tab >= UI_CLIENTS ? "1-5 tabs  ? help  q quit" :
                              "g group  n add  x edit  d remove  / search  1-5 tabs  ? help  q quit";
     mvaddnstr(LINES - 3, 2, actions, COLS - 4);
     mvaddnstr(LINES - 2, 2, navigation, COLS - 4);
@@ -170,6 +196,7 @@ static void change_tab(KmUi *ui, int tab) {
     ui_free_rows(ui); ui->tab = tab; ui->row = ui->top = 0; ui->filter[0] = '\0';
     json_object_put(ui->marks); ui->marks = json_object_new_object(); ui_rebuild(ui);
     if (tab == UI_STATUS) ui_refresh_status(ui);
+    if (tab == UI_CLIENTS) ui_clients_refresh(ui);
 }
 
 static void handle_key(KmUi *ui, int key) {
@@ -189,10 +216,26 @@ static void handle_key(KmUi *ui, int key) {
         if (km_get(ui->marks, id)) json_object_object_del(ui->marks, id);
         else json_object_object_add(ui->marks, id, json_object_new_boolean(true));
     } else if (key == '/') {
-        ui_input(ui, "Filter resources", "Search", ui->filter, sizeof(ui->filter));
-        ui->row = ui->top = 0; ui_rebuild(ui);
+        char filter[sizeof(ui->filter)]; snprintf(filter, sizeof(filter), "%s", ui->filter);
+        if (ui_input(ui, "Filter resources", "Search", filter, sizeof(filter))) {
+            snprintf(ui->filter, sizeof(ui->filter), "%s", filter);
+            ui->row = ui->top = 0; ui_rebuild(ui);
+        }
     } else if (key == 27) { ui->filter[0] = '\0'; ui->details = false; ui_notice(ui, "Filter cleared."); ui_rebuild(ui); }
     else if (key != ERR && key != KEY_RESIZE) ui_action(ui, key);
+}
+
+/* Keeps the list current when other Kitmux processes change the catalog, and never
+ * draws rows that refer to resources or groups from an older catalog. */
+static void refresh_catalog(KmUi *ui) {
+    if (ui_catalog_changed(ui)) {
+        if (km_load(ui->km) < 0) ui_notice(ui, "%.480s", ui->km->error);
+        else {
+            ui->rows_stale = true; ui_check_sync(ui);
+            if (ui->tab == UI_CLIENTS) ui_clients_refresh(ui);
+        }
+    }
+    if (ui->rows_stale) { ui->rows_stale = false; ui_rebuild(ui); }
 }
 
 static int prepare_groups(KmUi *ui) {
@@ -217,6 +260,7 @@ int km_tui(Km *km) {
     KmUi ui = {.km = km, .marks = json_object_new_object(), .collapsed = json_object_new_object()};
     if (!initscr()) { json_object_put(ui.marks); json_object_put(ui.collapsed); return km_error(km, "Cannot initialize the terminal"); }
     cbreak(); noecho(); keypad(stdscr, TRUE); curs_set(0); timeout(100);
+    if (!getenv("ESCDELAY")) set_escdelay(25);
     ui.colors = !getenv("NO_COLOR") && has_colors();
     if (ui.colors) { start_color(); use_default_colors(); init_pair(1, COLORS >= 256 ? 208 : COLOR_YELLOW, -1); }
     struct sigaction action = {.sa_handler = interrupted}, old_int, old_term;
@@ -224,7 +268,11 @@ int km_tui(Km *km) {
     sigaction(SIGINT, &action, &old_int); sigaction(SIGTERM, &action, &old_term);
     int result = prepare_groups(&ui);
     ui_rebuild(&ui);
-    while (!ui.done && !km_ui_interrupted) { ui_draw(&ui); handle_key(&ui, getch()); }
+    ui_catalog_changed(&ui); ui_check_sync(&ui);
+    while (!ui.done && !km_ui_interrupted) {
+        refresh_catalog(&ui);
+        ui_draw(&ui); handle_key(&ui, getch());
+    }
     endwin();
     int restored;
     do { restored = tcsetattr(STDIN_FILENO, TCSANOW, &original); } while (restored < 0 && errno == EINTR);

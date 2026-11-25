@@ -1,6 +1,7 @@
 #ifndef KITMUX_TUI_H
 #define KITMUX_TUI_H
 #include <signal.h>
+#include <sys/types.h>
 #include <time.h>
 #include "kitmux.h"
 #include <curses.h>
@@ -13,6 +14,15 @@ typedef struct {
     char *group;
     KmUiRowType type;
 } KmUiRow;
+
+typedef struct {
+    bool present;
+    dev_t device;
+    ino_t inode;
+    off_t size;
+    time_t modified, changed;
+    long modified_ns;
+} KmUiWatch;
 
 typedef struct {
     Km *km;
@@ -28,9 +38,14 @@ typedef struct {
     int snapshot_top;
     time_t snapshot_at;
     bool snapshot_more, snapshot_truncated;
+    char sync_error[512];
+    char clients[4096];
+    KmUiWatch watch;
     json_object *marks;
     json_object *collapsed;
     bool colors, done, details, truncated;
+    bool rows_stale;      /* catalog reloaded; rebuild rows before drawing */
+    bool sync_deferred;   /* last command saved the catalog but native sync failed */
 } KmUi;
 
 extern volatile sig_atomic_t km_ui_interrupted;
@@ -69,5 +84,9 @@ void ui_add_group(KmUi *ui, bool editing);
 void ui_duplicate(KmUi *ui);
 void ui_sync(KmUi *ui, bool importing);
 void ui_reconnect(KmUi *ui);
+bool ui_catalog_changed(KmUi *ui);
+void ui_check_sync(KmUi *ui);
+void ui_clients_refresh(KmUi *ui);
+int ui_capture(KmUi *ui, int argc, char **argv, char *output, size_t size, bool *truncated);
 int ui_tokens(char *text, char **argv, int capacity);
 #endif

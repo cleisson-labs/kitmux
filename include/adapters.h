@@ -36,6 +36,8 @@ int ad_change(AdRun *run, AdFile *file, const char *key, const char *desired, bo
 int ad_finish(AdRun *run);
 void ad_cleanup(AdRun *run);
 int ad_open(AdRun *run, Km *km, bool apply);
+/* Read-only: whether catalog mutations automatically sync this client. */
+bool ad_client_configured(Km *km, const char *agent);
 int ad_validate_state(Km *km, json_object *state);
 int ad_native_shape(Km *km, const char *agent, const char *path, json_object *doc);
 int ad_server_shape(Km *km, const char *agent, json_object *server);

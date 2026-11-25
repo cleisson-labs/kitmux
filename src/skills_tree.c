@@ -161,7 +161,9 @@ static int walk(Tree *tree, const char *relative, unsigned depth) {
         char target[PATH_MAX];
         result = km_path(tree->km, target, sizeof(target), "%s%s%s", tree->destination, *relative ? "/" : "", relative);
         if (!result) result = sync_directory(tree->km, target);
-        if (!result && chmod(target, SKILL_DIRECTORY_MODE))
+        /* The staging root stays writable until it is published: macOS 15 refuses
+         * to rename a directory that lacks write permission. */
+        if (!result && *relative && chmod(target, SKILL_DIRECTORY_MODE))
             result = km_error(tree->km, "cannot protect installed skill directory %s: %s", target, strerror(errno));
     }
     return result;
@@ -303,6 +305,8 @@ int km_skill_store(Km *km, KmSkill *skill, char *out, size_t size) {
     int result = hash_tree(km, skill->root, staging, copied_hash);
     if (!result && strcmp(copied_hash, skill->hash)) result = km_error(km, "source changed during skill installation");
     if (!result && rename(staging, out)) result = km_error(km, "cannot publish skill package: %s", strerror(errno));
+    else if (!result && chmod(out, SKILL_DIRECTORY_MODE))
+        return km_error(km, "cannot protect installed skill directory %s: %s", out, strerror(errno));
     if (result) km_skill_remove_tree(staging);
     return result ? result : sync_ancestry(km, parent);
 }

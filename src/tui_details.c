@@ -48,6 +48,19 @@ static void availability(Document *doc, KmUi *ui, json_object *item, const char 
     append(doc, "\n");
 }
 
+static const char *client_state(KmUi *ui, json_object *item, const char *id, const char *agent) {
+    if (ui->tab == UI_SUBAGENTS && !km_subagent_compatible(item, agent, NULL, 0)) return "N/A";
+    return km_effective(ui->km, ui_kind(ui), id, agent, NULL, 0) ? "ON" : "OFF";
+}
+
+/* One line under the title, so availability is visible even on the smallest screen. */
+static void availability_summary(Document *doc, KmUi *ui, json_object *item, const char *id) {
+    append(doc, "Clients:");
+    for (size_t i = 0; i < KM_AGENT_COUNT; i++)
+        append(doc, "%s %s %s", i ? " |" : "", km_agents[i], client_state(ui, item, id, km_agents[i]));
+    append(doc, "\n\n");
+}
+
 static void mcp_document(Document *doc, json_object *item) {
     const char *transport = km_string(item, "transport"), *mode = km_string(item, "mode");
     append(doc, "Transport: %s\nRuntime mode: %s\n\n", transport ? transport : "unknown", mode ? mode : "direct");
@@ -89,7 +102,6 @@ static void subagent_document(Document *doc, KmUi *ui, json_object *item, const 
            text_or_empty(item, "description"), text_or_empty(item, "instructions"));
     for (size_t i = 0; i < KM_AGENT_COUNT && !doc->failed; i++)
         variant_document(doc, ui, item, id, km_agents[i]);
-    append(doc, "Native reload required after changes; running work stays native.\n");
 }
 
 void ui_resource_details(KmUi *ui) {
@@ -99,10 +111,13 @@ void ui_resource_details(KmUi *ui) {
     Document doc = {.km = ui->km};
     ui->km->error[0] = '\0';
     append(&doc, "# %s: %s\n\n", ui_kind(ui), id);
+    availability_summary(&doc, ui, item, id);
+    /* Every kind shows its content first and availability after it. */
     if (ui->tab == UI_MCPS) mcp_document(&doc, item);
     if (ui->tab == UI_SKILLS) skill_document(&doc, item);
-    availability(&doc, ui, item, id);
     if (ui->tab == UI_SUBAGENTS) subagent_document(&doc, ui, item, id);
+    availability(&doc, ui, item, id);
+    if (ui->tab == UI_SUBAGENTS) append(&doc, "Native reload required after changes; running work stays native.\n");
     if (doc.failed) ui_notice(ui, "%.480s", *ui->km->error ? ui->km->error : "Cannot open details: document exceeds the size limit or memory is unavailable.");
     else {
         char title[128]; snprintf(title, sizeof(title), "Resource details: %s", id);

@@ -126,6 +126,21 @@ static bool table_header(const char *s, size_t begin, size_t end, const char *id
     toml_free(root); return main;
 }
 
+/* Comment and blank lines that end a table introduce whatever follows it, so
+ * they stay outside the owned span and survive edits or removal of the table. */
+static size_t content_end(const char *s, size_t begin, size_t end) {
+    Lex lex={0}; size_t last=begin;
+    for (size_t line=begin;line<end;) {
+        size_t stop=line; while (stop<end && s[stop]!='\n') stop++;
+        size_t first=line; while (first<stop && isspace((unsigned char)s[first])) first++;
+        bool filler=!lex.quote && !lex.depth && (first==stop || s[first]=='#');
+        scan_line(&lex,s,line,stop);
+        line=stop<end ? stop+1 : stop;
+        if (!filler) last=line;
+    }
+    return last;
+}
+
 static int span(Km *km, const char *text, const char *id, size_t *start, size_t *finish) {
     Lex lex={0}; bool found=false, closed=false;
     size_t length=strlen(text);
@@ -143,6 +158,7 @@ static int span(Km *km, const char *text, const char *id, size_t *start, size_t 
         begin=text[end] ? end+1 : end;
     }
     if (found && !closed) *finish=length;
+    if (found) *finish=content_end(text,*start,*finish);
     return found ? 1 : 0;
 }
 
@@ -152,16 +168,30 @@ char *ad_toml_raw(Km *km, const char *text, const char *id) {
     return result>0 ? strndup(text+start,end-start) : NULL;
 }
 
+/* Older journals recorded spans that included the following table's leading
+ * comments; trimming keeps a restored baseline from duplicating them. */
+static char *table_core(Km *km, const char *value) {
+    size_t length=content_end(value,0,strlen(value));
+    bool newline=length && value[length-1]=='\n';
+    char *core=malloc(length+2);
+    if (!core) { km_error(km,"out of memory"); return NULL; }
+    memcpy(core,value,length);
+    if (!newline) core[length++]='\n';
+    core[length]=0; return core;
+}
+
 int ad_toml_edit(Km *km, char **text, const char *id, const char *value) {
     size_t start=0,end=0;
     int result=span(km,*text,id,&start,&end);
     if (result<0) return -1;
-    if (result) return ad_replace(km,text,start,end,value);
-    if (!value) return 0;
-    size_t length=strlen(*text), n=strlen(value)+3;
+    if (!result && !value) return 0;
+    char *core=value ? table_core(km,value) : NULL;
+    if (value && !core) return -1;
+    if (result) { result=ad_replace(km,text,start,end,core); free(core); return result; }
+    size_t length=strlen(*text), n=strlen(core)+2;
     char *append=malloc(n);
-    if (!append) return km_error(km,"out of memory");
-    snprintf(append,n,"\n%s\n",value);
+    if (!append) { free(core); return km_error(km,"out of memory"); }
+    snprintf(append,n,"\n%s",core); free(core);
     result=ad_replace(km,text,length,length,append); free(append); return result;
 }
 

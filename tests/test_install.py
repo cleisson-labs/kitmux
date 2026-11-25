@@ -45,8 +45,8 @@ shutil.copyfile(source, args[args.index("-o") + 1])
         target.write_text(body)
         target.chmod(0o755)
 
-    def release(self, platform="linux", architecture="x86_64", version="0.5.0", executable=None):
-        stem = f"kitmux-v0.5.0-{platform}-{architecture}"
+    def release(self, platform="linux", architecture="x86_64", version="0.6.0", executable=None):
+        stem = f"kitmux-v0.6.0-{platform}-{architecture}"
         archive = self.downloads / f"{stem}.tar.gz"
         if executable is None:
             executable = f'#!/bin/sh\nprintf "kitmux {version}\\n"\n'.encode()
@@ -94,7 +94,7 @@ shutil.copyfile(source, args[args.index("-o") + 1])
                 self.assertTrue(os.access(installed, os.X_OK))
         urls = (self.root / "urls").read_text().splitlines()
         self.assertEqual(len(urls), 8)
-        self.assertTrue(all(url.startswith("https://github.com/cleissonom/kitmux/releases/download/v0.5.0/")
+        self.assertTrue(all(url.startswith("https://github.com/cleissonom/kitmux/releases/download/v0.6.0/")
                             for url in urls))
 
     def test_upgrade_preserves_previous_executable_for_rollback(self):
@@ -109,7 +109,7 @@ shutil.copyfile(source, args[args.index("-o") + 1])
         installed = self.existing()
         self.release()
         (self.downloads / "SHA256SUMS").write_text(
-            f"{'0' * 64}  kitmux-v0.5.0-linux-x86_64.tar.gz\n")
+            f"{'0' * 64}  kitmux-v0.6.0-linux-x86_64.tar.gz\n")
         self.install(success=False)
         self.assertEqual(installed.read_bytes(), b"previous executable\n")
         self.assertFalse((self.destination / "kitmux.previous").exists())

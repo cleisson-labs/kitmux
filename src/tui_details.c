@@ -32,6 +32,11 @@ static void append(Document *doc, const char *format, ...) {
     va_end(args);
 }
 
+static const char *text_or_empty(json_object *item, const char *key) {
+    const char *value = km_string(item, key);
+    return value ? value : "";
+}
+
 static void availability(Document *doc, KmUi *ui, json_object *item, const char *id) {
     append(doc, "## Availability\n\n");
     for (size_t i = 0; i < KM_AGENT_COUNT; i++) {
@@ -47,7 +52,7 @@ static void mcp_document(Document *doc, json_object *item) {
     const char *transport = km_string(item, "transport"), *mode = km_string(item, "mode");
     append(doc, "Transport: %s\nRuntime mode: %s\n\n", transport ? transport : "unknown", mode ? mode : "direct");
     const char *description = km_string(item, "description");
-    append(doc, "%s\n", description && *description ? description :
+    append(doc, "%s\n\n", description && *description ? description :
            "No description supplied. Add a Markdown description with mcp edit.");
     /* Endpoint arguments, native snapshots and environment values can contain credentials. */
 }
@@ -75,13 +80,13 @@ static void variant_document(Document *doc, KmUi *ui, json_object *item, const c
     free(text);
     if (!parsed) { doc->failed = true; return; }
     append(doc, "## %s variant\n\n%s\n\n%s\n\n", client,
-           km_string(parsed, "description"), km_string(parsed, "instructions"));
+           text_or_empty(parsed, "description"), text_or_empty(parsed, "instructions"));
     json_object_put(parsed);
 }
 
 static void subagent_document(Document *doc, KmUi *ui, json_object *item, const char *id) {
     append(doc, "## Shared description\n\n%s\n\n## Shared instructions\n\n%s\n\n",
-           km_string(item, "description"), km_string(item, "instructions"));
+           text_or_empty(item, "description"), text_or_empty(item, "instructions"));
     for (size_t i = 0; i < KM_AGENT_COUNT && !doc->failed; i++)
         variant_document(doc, ui, item, id, km_agents[i]);
     append(doc, "Native reload required after changes; running work stays native.\n");

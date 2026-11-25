@@ -15,7 +15,8 @@ static bool upstream_running(Rt *rt) {
 
 json_object *rt_connection_status(Rt *rt) {
     bool running = upstream_running(rt);
-    const char *state = !rt->enabled ? "disabled" : !rt->initialized ? "waiting" : running ? "running" : "idle";
+    const char *state = !rt->enabled ? "disabled" : !rt->initialized ? "waiting" : !running ? "idle" :
+                        rt->starting ? "starting" : "running";
     json_object *result = json_object_new_object();
     json_object_object_add(result, "state", json_object_new_string(state));
     json_object_object_add(result, "upstream_pid", json_object_new_int64(running ? rt->child : 0));
@@ -25,11 +26,12 @@ json_object *rt_connection_status(Rt *rt) {
     json_object_object_add(result, "upstream_protocol", running && *rt->upstream_protocol ? json_object_new_string(rt->upstream_protocol) : NULL);
     json_object_object_add(result, "protocol_lifecycle", json_object_new_string("legacy"));
     json_object_object_add(result, "tool_refresh", json_object_new_string("unverified"));
+    if (*rt->failure) json_object_object_add(result, "last_error", json_object_new_string(rt->failure));
     return result;
 }
 
 static bool valid_state(const char *state) {
-    return state && (!strcmp(state, "waiting") || !strcmp(state, "idle") ||
+    return state && (!strcmp(state, "waiting") || !strcmp(state, "idle") || !strcmp(state, "starting") ||
                      !strcmp(state, "running") || !strcmp(state, "disabled"));
 }
 
@@ -50,20 +52,23 @@ static json_object *sanitized_connection(json_object *reply) {
     }
     json_object_object_add(clean, "protocol_lifecycle", json_object_new_string("legacy"));
     json_object_object_add(clean, "tool_refresh", json_object_new_string("unverified"));
+    const char *failure = km_string(reply, "last_error");
+    if (failure && strlen(failure) < 256) json_object_object_add(clean, "last_error", json_object_new_string(failure));
     return clean;
 }
 
 static const char *aggregate_state(json_object *connections, int reachable, int unreachable, bool complete) {
     if (unreachable || !complete) return reachable ? "partial" : "unreachable";
     if (!reachable) return "inactive";
-    bool waiting = false, idle = false;
+    bool starting = false, waiting = false, idle = false;
     for (size_t i = 0; i < json_object_array_length(connections); i++) {
         const char *state = km_string(json_object_array_get_idx(connections, i), "state");
         if (!strcmp(state, "running")) return "running";
+        starting |= !strcmp(state, "starting");
         waiting |= !strcmp(state, "waiting");
         idle |= !strcmp(state, "idle");
     }
-    return waiting ? "waiting" : idle ? "idle" : "disabled";
+    return starting ? "starting" : waiting ? "waiting" : idle ? "idle" : "disabled";
 }
 
 json_object *rt_status(Km *km, const char *id, const char *agent) {

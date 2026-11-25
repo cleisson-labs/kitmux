@@ -8,7 +8,7 @@
 typedef struct {
     yaml_parser_t parser;
     yaml_document_t document;
-    size_t start, body;
+    size_t start, close, body;
     bool initialized, loaded;
 } Frontmatter;
 
@@ -34,7 +34,7 @@ static int open_frontmatter(Km *km, const char *text, Frontmatter *front) {
         if (text[end]) end++;
     }
     if (!text[end] || !next) return km_error(km,"unterminated subagent frontmatter");
-    front->body=next;
+    front->close=end; front->body=next;
     front->initialized=yaml_parser_initialize(&front->parser);
     if (!front->initialized) return km_error(km,"out of memory");
     yaml_parser_set_input_string(&front->parser,(const unsigned char *)text+front->start,end-front->start);
@@ -181,34 +181,48 @@ static int replace_scalar(Km *km, char **text, const char *key, const char *valu
     if (!scalar(node)) { close_frontmatter(&front); return km_error(km,"cannot safely edit native subagent metadata"); }
     size_t begin=0,end=0;
     if (scalar_span(km,&front,*text,key,node,&begin,&end)<0) { close_frontmatter(&front); return -1; }
-    json_object *string=json_object_new_string(value);
-    const char *quoted=json_object_to_json_string_ext(string,JSON_C_TO_STRING_PLAIN|JSON_C_TO_STRING_NOSLASHESCAPE);
+    close_frontmatter(&front);
+    char *quoted=km_subagent_yaml_quote(value);
     bool newline=end>begin && (*text)[end-1]=='\n';
-    size_t length=strlen(quoted)+2; char *replacement=malloc(length);
+    size_t length=quoted ? strlen(quoted)+2 : 0; char *replacement=quoted ? malloc(length) : NULL;
     if (replacement) snprintf(replacement,length,"%s%s",quoted,newline ? "\n" : "");
-    close_frontmatter(&front); json_object_put(string);
+    free(quoted);
     if (!replacement) return km_error(km,"out of memory");
     int result=ad_replace(km,text,begin,end,replacement); free(replacement); return result;
 }
 
-static int enable_native(Km *km, char **text) {
+static int set_disabled(Km *km, char **text, bool disabled) {
     Frontmatter front;
     if (open_frontmatter(km,*text,&front)<0) { close_frontmatter(&front); return -1; }
     yaml_node_t *node=field(&front,"disabled");
-    bool disabled=scalar(node) && !strcmp((const char *)node->data.scalar.value,"true");
-    size_t begin=0,end=0;
-    if (disabled && scalar_span(km,&front,*text,"disabled",node,&begin,&end)<0) { close_frontmatter(&front); return -1; }
+    bool current=scalar(node) && !strcmp((const char *)node->data.scalar.value,"true");
+    size_t begin=front.close,end=front.close; int result=0;
+    if (node && current!=disabled) result=scalar_span(km,&front,*text,"disabled",node,&begin,&end);
+    bool crlf=front.close>=2 && (*text)[front.close-2]=='\r';
     close_frontmatter(&front);
-    return disabled ? ad_replace(km,text,begin,end,"false") : 0;
+    if (result<0 || (node ? current==disabled : !disabled)) return result;
+    const char *value=node ? (disabled ? "true" : "false") : crlf ? "disabled: true\r\n" : "disabled: true\n";
+    return ad_replace(km,text,begin,end,value);
+}
+
+/* OpenCode keeps a natively disabled Markdown profile on disk; Kitmux preserves
+ * that representation instead of deleting an imported definition. */
+char *km_subagent_markdown_disable(Km *km, const char *text) {
+    char *result=strdup(text);
+    if (!result) { km_error(km,"out of memory"); return NULL; }
+    if (set_disabled(km,&result,true)<0) { free(result); return NULL; }
+    json_object *doc=km_subagent_markdown(km,result,"opencode");
+    if (!doc) { free(result); return NULL; }
+    json_object_put(doc); return result;
 }
 
 char *km_subagent_markdown_edit(Km *km, const char *text, const char *client, const char *id,
                                const char *description, const char *instructions) {
     json_object *doc=km_subagent_markdown(km,text,client);
     if (!doc) return NULL;
-    char *result=strdup(text); int status=0;
+    char *result=strdup(text); int status=result ? 0 : km_error(km,"out of memory");
     const char *name=km_string(doc,"name");
-    if (name && strcmp(name,id)) status=replace_scalar(km,&result,"name",id);
+    if (!status && name && strcmp(name,id)) status=replace_scalar(km,&result,"name",id);
     if (!status && description) status=replace_scalar(km,&result,"description",description);
     if (!status && instructions) {
         Frontmatter front;
@@ -216,7 +230,7 @@ char *km_subagent_markdown_edit(Km *km, const char *text, const char *client, co
         if (!status) status=ad_replace(km,&result,front.body,strlen(result),instructions);
         close_frontmatter(&front);
     }
-    if (!status && !strcmp(client,"opencode")) status=enable_native(km,&result);
+    if (!status && !strcmp(client,"opencode")) status=set_disabled(km,&result,false);
     json_object_put(doc);
     if (status<0) { free(result); return NULL; }
     doc=km_subagent_markdown(km,result,client);

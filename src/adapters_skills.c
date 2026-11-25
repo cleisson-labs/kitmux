@@ -1,4 +1,4 @@
-#include "adapters.h"
+#include "adapters_skills.h"
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,13 +11,16 @@ static json_object *links(AdRun *run) {
     return value;
 }
 
-static int real_parents(Km *km, const char *path) {
-    char copy[PATH_MAX]; snprintf(copy,sizeof(copy),"%s",path);
+static int real_parents(Km *km, const char *agent, const char *path) {
+    char copy[PATH_MAX];
+    if (km_path(km,copy,sizeof(copy),"%s",path)<0) return -1;
     for (char *p=copy+1;*p;p++) {
         if (*p!='/') continue;
         *p=0; struct stat st;
-        if (lstat(copy,&st)==0 && !S_ISDIR(st.st_mode)) return km_error(km,"shared or symlinked skill directory prevents agent isolation; migrate it first");
-        if (errno!=ENOENT && lstat(copy,&st)<0) return km_error(km,"cannot inspect skill discovery directory");
+        if (lstat(copy,&st)==0) {
+            if (!S_ISDIR(st.st_mode))
+                return km_error(km,"%s: skill discovery directory %s is a symlink or file, which prevents client isolation; replace it with a real directory, then run `kitmux sync --apply --agent %s`",agent,copy,agent);
+        } else if (errno!=ENOENT) return km_error(km,"%s: cannot inspect skill discovery directory %s: %s",agent,copy,strerror(errno));
         *p='/';
     }
     return 0;
@@ -35,34 +38,63 @@ static bool projection_path(Km *km, const char *agent, const char *path, const c
     return false;
 }
 
+typedef struct { bool exists, symlink; char target[PATH_MAX]; } LinkState;
+
+static int read_link(Km *km, const char *agent, const char *path, LinkState *state) {
+    memset(state,0,sizeof(*state));
+    struct stat st;
+    if (lstat(path,&st)<0) return errno==ENOENT ? 0 : km_error(km,"%s: cannot inspect skill projection %s: %s",agent,path,strerror(errno));
+    state->exists=true;
+    if (!S_ISLNK(st.st_mode)) return 0;
+    ssize_t n=readlink(path,state->target,sizeof(state->target)-1);
+    if (n<0 || (size_t)n>=sizeof(state->target)-1) return km_error(km,"%s: cannot read skill projection %s",agent,path);
+    state->target[n]=0; state->symlink=true; return 0;
+}
+
+static bool link_is(const LinkState *state, const char *target) {
+    return target ? state->symlink && !strcmp(state->target,target) : !state->exists;
+}
+
+static int changed_link(Km *km, const char *agent, const char *path, const LinkState *now) {
+    return km_error(km,"%s: skill projection %s was changed outside Kitmux (now %s%s); run `kitmux import --refresh --from %s --apply` to adopt that change, or restore the link and run `kitmux sync --apply --agent %s`",
+                    agent,path,now->symlink ? "a link to " : "a real file or directory",now->symlink ? now->target : "",agent,agent);
+}
+
+static int unowned_link(Km *km, const char *agent, const char *path, const LinkState *now) {
+    if (now->symlink)
+        return km_error(km,"%s: %s already links to %s outside Kitmux; adopt it with `kitmux import --from %s --apply` or move it aside, then run `kitmux sync --apply --agent %s`",agent,path,now->target,agent,agent);
+    return km_error(km,"%s: %s is an unmanaged skill directory or file; install it with `kitmux skill add %s` and move the original aside, then run `kitmux sync --apply --agent %s`",agent,path,path,agent);
+}
+
+/* Reconcile one owned projection. Deleted links are recreated or left absent;
+ * only different content at an owned path, or unowned content where Kitmux
+ * needs a projection, is a conflict. Unwanted unowned content is left alone. */
 static int link_change(AdRun *run, const char *agent, const char *path, const char *target, bool adopt) {
     const char *id=strrchr(path,'/');
-    if (!id || !projection_path(run->km,agent,path,id+1)) return km_error(run->km,"unsafe skill projection path");
-    if (real_parents(run->km,path)<0) return -1;
+    if (!id || !projection_path(run->km,agent,path,id+1)) return km_error(run->km,"%s: unsafe skill projection path %s",agent,path);
+    if (real_parents(run->km,agent,path)<0) return -1;
+    LinkState now;
+    if (read_link(run->km,agent,path,&now)<0) return -1;
     json_object *record=km_get(links(run),path);
-    struct stat st; char actual[PATH_MAX]; const char *current=NULL;
-    if (lstat(path,&st)==0) {
-        ssize_t n=readlink(path,actual,sizeof(actual)-1);
-        if (n<0 || (size_t)n>=sizeof(actual)-1) return km_error(run->km,"unowned skill projection collision; preserve the existing skill");
-        actual[n]=0; current=actual;
-    } else if (errno!=ENOENT) return km_error(run->km,"cannot inspect skill projection");
     if (record) {
         bool pending=json_object_get_boolean(km_get(run->state,"pending"));
-        const char *after=km_string(record,"after"), *previous=km_string(record,"previous");
-        bool expected=(!current && !after) || (current && after && !strcmp(current,after));
-        bool prior=(!current && !previous) || (current && previous && !strcmp(current,previous));
-        if (!expected && !(pending && prior)) return km_error(run->km,"owned skill link changed outside Kitmux; preserve that edit first");
+        bool expected=link_is(&now,km_string(record,"after"));
+        bool prior=pending && link_is(&now,km_string(record,"previous"));
+        bool adopted=adopt && run->refresh && now.symlink;
+        if (now.exists && !expected && !prior && !adopted) return target ? changed_link(run->km,agent,path,&now) : 0;
     } else {
-        if (current && !adopt) return km_error(run->km,"unowned skill symlink collision; migrate it before adoption");
+        if (!target) return 0;
+        if (now.exists && !(adopt && now.symlink) && !link_is(&now,target)) return unowned_link(run->km,agent,path,&now);
         record=json_object_new_object();
         json_object_object_add(record,"agent",json_object_new_string(agent));
-        if (current) json_object_object_add(record,"before",json_object_new_string(current));
+        if (now.symlink) json_object_object_add(record,"before",json_object_new_string(now.target));
         json_object_object_add(links(run),path,record);
     }
+    const char *current=now.symlink ? now.target : NULL;
     json_object_object_del(record,"previous"); json_object_object_del(record,"after");
     if (current) json_object_object_add(record,"previous",json_object_new_string(current));
     if (target) json_object_object_add(record,"after",json_object_new_string(target));
-    if ((!current && !target) || (current && target && !strcmp(current,target))) return 0;
+    if (link_is(&now,target)) return 0;
     json_object *action=json_object_new_object();
     json_object_object_add(action,"path",json_object_new_string(path));
     if (current) json_object_object_add(action,"before",json_object_new_string(current));
@@ -71,12 +103,15 @@ static int link_change(AdRun *run, const char *agent, const char *path, const ch
 }
 
 int ad_adopt_skill_link(AdRun *run, const char *agent, const char *path, const char *target) {
-    char actual[PATH_MAX];
-    ssize_t size=readlink(path,actual,sizeof(actual)-1);
-    if (size<0 || (size_t)size>=sizeof(actual)-1) return km_error(run->km,"native skill alias changed during import");
-    actual[size]=0;
-    if (strcmp(actual,target)) return km_error(run->km,"native skill alias changed during import");
+    LinkState now;
+    if (read_link(run->km,agent,path,&now)<0) return -1;
+    if (!link_is(&now,target)) return km_error(run->km,"%s: native skill alias %s changed during import; retry the import",agent,path);
     return link_change(run,agent,path,target,true);
+}
+
+/* Refresh adopts a native replacement by releasing Kitmux ownership of that path. */
+void ad_release_skill_link(AdRun *run, const char *path) {
+    json_object_object_del(links(run),path);
 }
 
 static const char *skill_root(const char *agent) {
@@ -124,17 +159,15 @@ int ad_skill_bindings_valid(Km *km, json_object *skill, const char *id) {
 
 static int project_path(AdRun *run, const char *agent, const char *id, json_object *skill, const char *path) {
     char reason[256];
-    if (!projection_path(run->km,agent,path,id)) return km_error(run->km,"unsafe imported skill discovery binding");
+    if (!projection_path(run->km,agent,path,id)) return km_error(run->km,"%s: unsafe imported skill discovery binding %s for %s",agent,path,id);
     bool enabled=km_effective(run->km,"skill",id,agent,reason,sizeof(reason));
     const char *target=enabled ? km_string(skill,"path") : NULL;
     if (enabled) {
         struct stat st;
-        if (!target || stat(target,&st)<0 || !S_ISDIR(st.st_mode)) return km_error(run->km,"selected skill package is missing: %s",id);
-        if (!strcmp(agent,"codex")) {
-            bool native=true;
-            if (ad_skill_native_enabled(run,agent,id,path,&native)<0) return -1;
-            if (!native) return km_error(run->km,"native Codex skills.config still disables %s; change that native override before enabling and retry sync --apply",id);
-        }
+        if (!target || stat(target,&st)<0 || !S_ISDIR(st.st_mode))
+            return km_error(run->km,"%s: installed package for skill %s is missing at %s; run `kitmux skill update %s --apply` or `kitmux skill remove %s`",
+                            agent,id,target ? target : "(no path)",id,id);
+        if (!strcmp(agent,"codex") && ad_codex_skill_allowed(run,id,path)<0) return -1;
     }
     return link_change(run,agent,path,target,false);
 }
@@ -157,6 +190,49 @@ static int project(AdRun *run, const char *agent, const char *id, json_object *s
     return project_path(run,agent,id,skill,path);
 }
 
+bool ad_skill_link_owned(AdRun *run, const char *path) {
+    json_object *record=km_get(km_get(run->state,"links"),path);
+    return record && (km_get(record,"after") || km_get(record,"before") || km_get(record,"previous"));
+}
+
+static bool claude_managed(AdRun *run, const char *id) {
+    char path[PATH_MAX];
+    return km_path(run->km,path,sizeof(path),"%s/.claude/skills/%s",run->km->home,id)==0 && ad_skill_link_owned(run,path);
+}
+
+static bool binding_at(json_object *skill, const char *field, const char *agent, const char *path) {
+    json_object *bindings=km_get(km_get(skill,field),agent);
+    if (!json_object_is_type(bindings,json_type_array)) return false;
+    for (size_t i=0;i<json_object_array_length(bindings);i++) {
+        const char *bound=km_string(json_object_array_get_idx(bindings,i),"path");
+        if (bound && !strcmp(bound,path)) return true;
+    }
+    return false;
+}
+
+static bool codex_shared_projection(json_object *skill, const char *shared) {
+    json_object *bindings=km_get(km_get(skill,"discovery"),"codex");
+    bool defaults=!json_object_is_type(bindings,json_type_array) || !json_object_array_length(bindings);
+    return defaults || binding_at(skill,"discovery","codex",shared);
+}
+
+/* OpenCode also reads ~/.claude/skills and ~/.agents/skills. A Kitmux skill is
+ * visible there when Kitmux projects it for Claude/Codex, still owns a link
+ * there, or imported it for OpenCode from that shared location. */
+bool ad_skill_shared_visible(AdRun *run, const char *id, json_object *skill) {
+    char claude[PATH_MAX], shared[PATH_MAX];
+    if (km_path(run->km,claude,sizeof(claude),"%s/.claude/skills/%s",run->km->home,id)<0 ||
+        km_path(run->km,shared,sizeof(shared),"%s/.agents/skills/%s",run->km->home,id)<0) return true;
+    if (km_effective(run->km,"skill",id,"claude",NULL,0)) return true;
+    if (km_effective(run->km,"skill",id,"codex",NULL,0) && codex_shared_projection(skill,shared)) return true;
+    const char *paths[]={claude,shared};
+    for (size_t i=0;i<2;i++) {
+        if (km_get(km_get(km_get(run->state,"links"),paths[i]),"after")) return true;
+        if (binding_at(skill,"origins","opencode",paths[i])) return true;
+    }
+    return false;
+}
+
 static int claude_overrides(AdRun *run) {
     AdFile *file=ad_file(run,"claude",".claude/settings.json",false);
     if (!file) return -1;
@@ -168,7 +244,9 @@ static int claude_overrides(AdRun *run) {
         const char *before=record ? km_string(record,"before") : current;
         json_object *original=before ? ad_parse(run->km,before) : NULL;
         bool was_off=original && json_object_is_type(original,json_type_string) && !strcmp(json_object_get_string(original),"off");
-        const char *desired=enabled ? (was_off ? NULL : before) : "\"off\"";
+        /* "off" is keyed by name and also hides plugin/project skills, so only
+         * write it where Kitmux manages (or managed) the Claude projection. */
+        const char *desired=enabled ? (was_off ? NULL : before) : claude_managed(run,id) ? "\"off\"" : before;
         int result=ad_change(run,file,key,desired,true);
         json_object_put(original); free(current);
         if (result<0) return -1;
@@ -186,56 +264,6 @@ static int claude_overrides(AdRun *run) {
     return 0;
 }
 
-static int opencode_permissions(AdRun *run) {
-    AdFile *file=ad_native_file(run,"opencode");
-    if (!file) return -1;
-    json_object *record=km_get(km_get(km_get(km_get(run->state,"files"),file->path),"entries"),"permissions");
-    char *current=ad_json_raw(run->km,file->text,"permissions");
-    const char *original=record ? km_string(record,"before") : current;
-    char *desired=strdup(original ? original : "[]");
-    json_object *array=ad_parse(run->km,desired);
-    if (!array || !json_object_is_type(array,json_type_array)) {
-        if (array) json_object_put(array);
-        free(current); free(desired); return km_error(run->km,"OpenCode permissions must use the v2 array schema");
-    }
-    bool added=false;
-    json_object *document=ad_parse(run->km,file->text), *agents=km_get(document,"agents");
-    bool agent_skill_allow=false;
-    if (agents && json_object_is_type(agents,json_type_object)) {
-        json_object_object_foreach(agents,name,agent) {
-            (void)name; json_object *permissions=km_get(agent,"permissions");
-            if (!permissions) continue;
-            if (!json_object_is_type(permissions,json_type_array)) { agent_skill_allow=true; break; }
-            for (size_t i=0;i<json_object_array_length(permissions);i++) {
-                json_object *rule=json_object_array_get_idx(permissions,i);
-                const char *action=km_string(rule,"action"), *effect=km_string(rule,"effect");
-                if (action && (!strcmp(action,"skill") || !strcmp(action,"*")) && (!effect || strcmp(effect,"deny"))) agent_skill_allow=true;
-            }
-        }
-    }
-    if (document) json_object_put(document);
-    json_object_object_foreach(km_resources(run->km,"skill"),id,skill) {
-        (void)skill; char reason[256];
-        if (km_effective(run->km,"skill",id,"opencode",reason,sizeof(reason))) continue;
-        if (agent_skill_allow) {
-            json_object_put(array); free(current); free(desired);
-            return km_error(run->km,"OpenCode agent-level skill permissions conflict with isolation; reconcile them before sync");
-        }
-        json_object *rule=json_object_new_object();
-        json_object_object_add(rule,"action",json_object_new_string("skill"));
-        json_object_object_add(rule,"resource",json_object_new_string(id));
-        json_object_object_add(rule,"effect",json_object_new_string("deny"));
-        int result=ad_array_append(run->km,&desired,json_object_to_json_string_ext(rule,JSON_C_TO_STRING_PLAIN));
-        json_object_put(rule);
-        if (result<0) { json_object_put(array); free(current); free(desired); return -1; }
-        added=true;
-    }
-    json_object_put(array);
-    int result=0;
-    if (record || added) result=ad_change(run,file,"permissions",(!original && !added) ? NULL : desired,true);
-    free(current); free(desired); return result;
-}
-
 int ad_sync_skills(AdRun *run, const char *agent) {
     json_object_object_foreach(km_resources(run->km,"skill"),id,skill)
         if (project(run,agent,id,skill)<0) return -1;
@@ -246,7 +274,7 @@ int ad_sync_skills(AdRun *run, const char *agent) {
         if (id && !km_get(km_resources(run->km,"skill"),id+1) && link_change(run,agent,path,NULL,false)<0) return -1;
     }
     if (!strcmp(agent,"claude")) return claude_overrides(run);
-    if (!strcmp(agent,"opencode")) return opencode_permissions(run);
+    if (!strcmp(agent,"opencode")) return ad_sync_skill_rules(run);
     return 0;
 }
 
@@ -256,9 +284,9 @@ int ad_restore_links(AdRun *run, const char *agent) {
         const char *owner=km_string(record,"agent");
         if (agent && strcmp(agent,owner)) continue;
         if (strncmp(path,run->km->home,strlen(run->km->home)) || path[strlen(run->km->home)]!='/')
-            return km_error(run->km,"ownership record points outside selected home");
+            return km_error(run->km,"%s: skill ownership record %s points outside the selected home",owner,path);
         const char *before=km_string(record,"before");
         if (link_change(run,owner,path,before,false)<0) return -1;
     }
-    return 0;
+    return !agent || !strcmp(agent,"opencode") ? ad_restore_skill_rules(run) : 0;
 }

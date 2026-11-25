@@ -20,7 +20,7 @@ class GroupedTerminalTests(TerminalTestCase):
         terminal.send(b"3")
         terminal.wait_text("Subagents")
         terminal.send(b"4")
-        terminal.wait_text("Separate configuration")
+        terminal.wait_text("adoption and native configuration state")
         terminal.send(b"5")
         terminal.wait_text("Runtime snapshot")
         terminal.send(b"q")

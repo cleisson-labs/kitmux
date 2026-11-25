@@ -139,6 +139,8 @@ class SkillTests(unittest.TestCase):
         original = self.catalog()["skills"]["meeting-notes"]
         self.write_skill("Revised instructions")
         self.cli("skill", "update", "meeting-notes", "--apply")
+        # Installed revisions are read-only; tampering must bypass that protection first.
+        (Path(original["path"]) / "SKILL.md").chmod(0o600)
         (Path(original["path"]) / "SKILL.md").write_text(
             "---\nname: meeting-notes\ndescription: Take notes\n---\nTampered\n")
         before = (self.home / ".config/kitmux/catalog.json").read_bytes()

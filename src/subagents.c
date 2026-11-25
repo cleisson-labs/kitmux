@@ -2,6 +2,8 @@
 #include "adapters.h"
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
+#include <sys/stat.h>
 
 typedef struct {
     const char *path;
@@ -80,7 +82,7 @@ static int check_projection_format(Km *km, const char *id, const char *format) {
     AdRun run;
     int result = ad_open(&run, km, false);
     if (!result && owned_projection_conflict(&run, id, !strcmp(format, "opencode-json")))
-        result = km_error(km, "Native format differs from its managed projection; use the existing format or a separate profile");
+        result = km_error(km, "Native format %s differs from the managed OpenCode projection of %s; edit it in its current format or use a separate profile", format, id);
     ad_cleanup(&run);
     return result;
 }
@@ -106,11 +108,67 @@ static json_object *replacement(Km *km, const char *id, json_object *existing, S
     return resource;
 }
 
+const char *km_subagent_case_twin(Km *km, const char *id) {
+    json_object_object_foreach(km_resources(km,"subagent"),existing,resource) {
+        (void)resource;
+        if (!strcasecmp(existing,id) && strcmp(existing,id)) return existing;
+    }
+    return NULL;
+}
+
+static int distinct_id(Km *km, const char *id) {
+    const char *twin=km_subagent_case_twin(km,id);
+    return twin ? km_error(km,"Subagent ID %s differs from existing %s only by letter case; their native files would "
+                           "collide on case-insensitive file systems. Choose another ID",id,twin) : 0;
+}
+
+/* Policy ignores incompatible profiles; evaluate the assignment as if a variant
+ * existed to tell "assigned but unusable" apart from "not assigned". */
+bool km_subagent_unusable_assignment(Km *km, const char *id, const char *client) {
+    json_object *resource=km_get(km_resources(km,"subagent"),id);
+    if (!resource || km_subagent_compatible(resource,client,NULL,0)) return false;
+    json_object *portable=json_object_get(km_get(resource,"portable"));
+    json_object_object_add(resource,"portable",json_object_new_boolean(true));
+    bool assigned=km_effective(km,"subagent",id,client,NULL,0);
+    json_object_object_add(resource,"portable",portable);
+    return assigned;
+}
+
+static int journal_fits(Km *km, const char *id, size_t needed) {
+    char journal[PATH_MAX]; struct stat st; size_t used=0;
+    if (km_path(km,journal,sizeof(journal),"%s/adapters.json",km->state)<0) return -1;
+    if (lstat(journal,&st)==0 && st.st_size>0) used=(size_t)st.st_size;
+    if (needed+used<=KM_MAX_FILE) return 0;
+    return km_error(km,"Subagent %s needs about %zu KiB in the native ownership journal, which already uses %zu KiB of its "
+                    "8 MiB limit; shorten its instructions or native variants",id,needed/1024,used/1024);
+}
+
+/* A cheap lower bound rejects oversized profiles before rendering them. */
+static size_t minimum_footprint(json_object *resource) {
+    size_t instructions=strlen(km_string(resource,"instructions")), total=0;
+    for (size_t i=0;i<KM_AGENT_COUNT;i++) {
+        if (!km_subagent_compatible(resource,km_agents[i],NULL,0)) continue;
+        const char *text=km_string(km_get(km_get(resource,"native"),km_agents[i]),"text");
+        size_t length=text && strlen(text)<instructions ? strlen(text) : instructions;
+        total+=3*length;
+    }
+    return total;
+}
+
+/* Every variant must render and the projections must fit the 8 MiB ownership
+ * journal before the catalog changes; otherwise sync would fail afterwards. */
+static int projectable(Km *km, const char *id, json_object *resource) {
+    size_t needed=0;
+    if (journal_fits(km,id,minimum_footprint(resource))<0 || km_subagent_check(km,id,resource,&needed)<0) return -1;
+    return journal_fits(km,id,needed);
+}
+
 static int define(Km *km, int argc, char **argv, bool editing) {
     const char *id = argv[1];
     if (!km_valid_id(id)) return km_error(km, "Use a subagent ID with 1-64 letters, digits, hyphens or underscores");
     json_object *resources = km_resources(km, "subagent"), *existing = km_get(resources, id);
     if (editing != (existing != NULL)) return km_error(km, editing ? "Unknown subagent: %s" : "Subagent already exists: %s", id);
+    if (!editing && distinct_id(km, id) < 0) return -1;
     SubagentOptions choice;
     if (options(km, argc, argv, &choice) < 0) return -1;
     if (editing && check_projection_format(km, id, choice.format) < 0) return -1;
@@ -118,7 +176,7 @@ static int define(Km *km, int argc, char **argv, bool editing) {
         return km_error(km, "Usage: subagent add|edit ID --from FILE [--format FORMAT] [--description TEXT]");
     json_object *resource = replacement(km, id, existing, &choice);
     if (!resource) return -1;
-    if (km_subagent_validate(km, id, resource) < 0) { json_object_put(resource); return -1; }
+    if (km_subagent_validate(km, id, resource) < 0 || projectable(km, id, resource) < 0) { json_object_put(resource); return -1; }
     if (existing && json_object_equal(existing, resource)) {
         json_object_put(resource); printf("Subagent %s is already current.\n", id); return 0;
     }
@@ -148,13 +206,14 @@ static int duplicate(Km *km, const char *id, const char *new_id) {
     json_object *resources = km_resources(km, "subagent"), *existing = km_get(resources, id);
     if (!existing) return km_error(km, "Unknown subagent: %s", id);
     if (!km_valid_id(new_id) || km_get(resources, new_id)) return km_error(km, "New subagent ID is invalid or already exists");
+    if (distinct_id(km, new_id) < 0) return -1;
     json_object *resource = copy_resource(km, existing);
     if (!resource) return -1;
     json_object_object_del(resource, "origins");
     json_object_object_del(resource, "source");
     json_object_object_add(resource, "enabled", json_object_new_boolean(true));
     json_object_object_add(resource, "agents", json_object_new_object());
-    if (rename_variants(km, resource, new_id) < 0) { json_object_put(resource); return -1; }
+    if (rename_variants(km, resource, new_id) < 0 || projectable(km, new_id, resource) < 0) { json_object_put(resource); return -1; }
     json_object_object_add(resources, new_id, resource);
     if (km_save(km) < 0) return -1;
     printf("Duplicated %s as %s; choose a group or client to enable it.\n", id, new_id);
@@ -204,6 +263,19 @@ static int import(Km *km, int argc, char **argv) {
     return result;
 }
 
+static void warn_unusable(Km *km, const char *id, const char *only) {
+    json_object *resource = km_get(km_resources(km, "subagent"), id);
+    for (size_t i = 0; i < KM_AGENT_COUNT; i++) {
+        const char *client = km_agents[i];
+        if (only ? strcmp(only, client) || km_subagent_compatible(resource, client, NULL, 0) :
+                   !km_subagent_unusable_assignment(km, id, client)) continue;
+        fprintf(stderr, "kitmux: warning: subagent %s has no %s variant, so %s stays unavailable; add one with "
+                "`kitmux subagent edit %s --from FILE --format %s`\n", id, client, client, id, client);
+    }
+}
+
+void km_subagent_warn_assignments(Km *km, const char *id) { warn_unusable(km, id, NULL); }
+
 int km_subagent_command(Km *km, int argc, char **argv) {
     if (!argc || !strcmp(argv[0], "list")) {
         if (argc > 2 || (argc == 2 && strcmp(argv[1], "--json"))) return km_error(km, "Usage: subagent list [--json]");
@@ -221,6 +293,10 @@ int km_subagent_command(Km *km, int argc, char **argv) {
         puts(json_object_to_json_string_ext(result, JSON_C_TO_STRING_PRETTY)); json_object_put(result); return 0;
     }
     if (!strcmp(verb, "remove") && argc == 2) return km_remove_resource(km, "subagent", id);
-    if (!strcmp(verb, "enable") || !strcmp(verb, "disable") || !strcmp(verb, "inherit")) return km_resource_toggle(km, "subagent", argc, argv);
+    if (!strcmp(verb, "enable") || !strcmp(verb, "disable") || !strcmp(verb, "inherit")) {
+        int result = km_resource_toggle(km, "subagent", argc, argv);
+        if (!result && !strcmp(verb, "enable")) warn_unusable(km, id, argc == 4 ? argv[3] : NULL);
+        return result;
+    }
     return km_error(km, "Invalid subagent command or arguments; run --help");
 }

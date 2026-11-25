@@ -152,12 +152,14 @@ static char *quote(const char *value) {
 }
 
 static char *portable_text(Km *km, json_object *resource, const char *id, const char *client) {
-    char *description=quote(km_string(resource,"description")), *instructions=quote(km_string(resource,"instructions"));
-    if (!description || !instructions) { free(description); free(instructions); km_error(km,"out of memory"); return NULL; }
+    bool codex=!strcmp(client,"codex");
     const char *body=km_string(resource,"instructions");
-    size_t length=strlen(description)+strlen(instructions)+strlen(body)+strlen(id)+160;
-    char *text=malloc(length);
-    if (text && !strcmp(client,"codex"))
+    char *description=codex ? km_subagent_toml_quote(km_string(resource,"description")) :
+                              km_subagent_yaml_quote(km_string(resource,"description"));
+    char *instructions=codex ? km_subagent_toml_quote(body) : NULL;
+    size_t length=(description ? strlen(description) : 0)+(instructions ? strlen(instructions) : strlen(body))+strlen(id)+160;
+    char *text=description && (!codex || instructions) ? malloc(length) : NULL;
+    if (text && codex)
         snprintf(text,length,"name = \"%s\"\ndescription = %s\ndeveloper_instructions = %s\n",id,description,instructions);
     else if (text && !strcmp(client,"claude"))
         snprintf(text,length,"---\nname: \"%s\"\ndescription: %s\n---\n%s",id,description,body);
@@ -169,29 +171,65 @@ static char *portable_text(Km *km, json_object *resource, const char *id, const 
 
 static char *json_edit(Km *km, const char *text, const char *description, const char *instructions, bool disabled) {
     char *result=strdup(text);
+    if (!result) { km_error(km,"out of memory"); return NULL; }
     const char *values[]={description,instructions}, *keys[]={"description","prompt"};
-    for (size_t i=0;result && i<2;i++) {
+    for (size_t i=0;i<2;i++) {
         if (!values[i]) continue;
         char *quoted=quote(values[i]);
-        int status=ad_json_edit(km,&result,keys[i],quoted); free(quoted);
+        int status=quoted ? ad_json_edit(km,&result,keys[i],quoted) : km_error(km,"out of memory"); free(quoted);
         if (status<0) { free(result); return NULL; }
     }
-    if (result && disabled && ad_json_edit(km,&result,"disabled","false")<0) { free(result); return NULL; }
+    if (disabled && ad_json_edit(km,&result,"disabled","false")<0) { free(result); return NULL; }
     return result;
 }
 
-char *km_subagent_render(Km *km, json_object *resource, const char *id, const char *client) {
-    if (km_subagent_validate(km,id,resource)<0) return NULL;
-    if (!km_subagent_compatible(resource,client,NULL,0)) {
-        km_error(km,"subagent requires an explicit native variant for this client"); return NULL;
-    }
+static char *render_text(Km *km, json_object *resource, const char *id, const char *client, const char **format) {
     json_object *native=km_get(km_get(resource,"native"),client);
+    *format=native ? km_string(native,"format") : client;
     if (!native) return portable_text(km,resource,id,client);
     const char *description=km_string(resource,"description"), *instructions=km_string(resource,"instructions");
     if (!strcmp(description,km_string(native,"description"))) description=NULL;
     if (!strcmp(instructions,km_string(native,"instructions"))) instructions=NULL;
-    const char *text=km_string(native,"text"), *format=km_string(native,"format");
-    if (!strcmp(format,"codex")) return km_subagent_toml_edit(km,text,id,description,instructions);
-    if (!strcmp(format,"opencode-json")) return json_edit(km,text,description,instructions,json_object_get_boolean(km_get(native,"disabled")));
+    const char *text=km_string(native,"text");
+    if (!strcmp(*format,"codex")) return km_subagent_toml_edit(km,text,id,description,instructions);
+    if (!strcmp(*format,"opencode-json")) return json_edit(km,text,description,instructions,json_object_get_boolean(km_get(native,"disabled")));
     return km_subagent_markdown_edit(km,text,client,id,description,instructions);
+}
+
+/* A rendered definition is recorded in the ownership journal, which accepts only
+ * texts that parse back; never return one that would poison it. */
+char *km_subagent_render(Km *km, json_object *resource, const char *id, const char *client) {
+    if (km_subagent_validate(km,id,resource)<0) return NULL;
+    if (!km_subagent_compatible(resource,client,NULL,0)) {
+        km_error(km,"Subagent %s has no %s variant; add one with `kitmux subagent edit %s --from FILE --format %s`",id,client,id,client);
+        return NULL;
+    }
+    const char *format=NULL;
+    char *text=render_text(km,resource,id,client,&format);
+    json_object *parsed=text ? km_subagent_parse(km,text,format,id) : NULL;
+    if (parsed) { json_object_put(parsed); return text; }
+    char cause[512]; snprintf(cause,sizeof(cause),"%s",km->error);
+    free(text);
+    km_error(km,"Cannot render the %s definition of subagent %s (%s); edit its shared text or native variant and retry",client,id,cause);
+    return NULL;
+}
+
+/* The journal keeps before, after and previous copies, JSON-escaped. */
+static size_t journal_footprint(const char *text) {
+    json_object *string=json_object_new_string(text);
+    size_t length=string ? strlen(json_object_to_json_string_ext(string,JSON_C_TO_STRING_PLAIN)) : strlen(text)*6;
+    json_object_put(string);
+    return 3*length;
+}
+
+int km_subagent_check(Km *km, const char *id, json_object *resource, size_t *journal_bytes) {
+    if (journal_bytes) *journal_bytes=0;
+    for (size_t i=0;i<KM_AGENT_COUNT;i++) {
+        if (!km_subagent_compatible(resource,km_agents[i],NULL,0)) continue;
+        char *text=km_subagent_render(km,resource,id,km_agents[i]);
+        if (!text) return -1;
+        if (journal_bytes) *journal_bytes+=journal_footprint(text);
+        free(text);
+    }
+    return 0;
 }

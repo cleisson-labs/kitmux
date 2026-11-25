@@ -8,6 +8,8 @@ commit `62ce93ceb713dc49909d0fef1411f9d37bef83f2`:
 - `include/adapters_toml_vendor.h` (upstream `toml.h`)
 
 The upstream MIT copyright and permission notices are retained in both files.
+Local modification: the parser accepts lowercase hexadecimal digits in `\u` and
+`\U` escapes, as the TOML specification allows; each patched spot is commented.
 
 Development builds link installed json-c, libyaml, ncurses, and OpenSSL libcrypto.
 Release builds download checksum-pinned upstream sources into an isolated build

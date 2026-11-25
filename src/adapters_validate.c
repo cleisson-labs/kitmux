@@ -75,6 +75,14 @@ static bool links_valid(Km *km, json_object *records) {
     return true;
 }
 
+static bool agent_flags_valid(json_object *flags) {
+    if (!flags) return true;
+    if (!json_object_is_type(flags,json_type_object)) return false;
+    json_object_object_foreach(flags,agent,value)
+        if (!km_valid_agent(agent) || !json_object_is_type(value,json_type_boolean)) return false;
+    return true;
+}
+
 int ad_validate_state(Km *km, json_object *state) {
     json_object *files=km_get(state,"files"), *version=km_get(state,"version"), *pending=km_get(state,"pending");
     if (!json_object_is_type(state,json_type_object) || !json_object_is_type(version,json_type_int) ||
@@ -93,13 +101,9 @@ int ad_validate_state(Km *km, json_object *state) {
         }
     }
     if (!links_valid(km,km_get(state,"links"))) goto invalid;
-    if (ad_subagent_state_valid(km,state)<0) goto invalid;
-    json_object *management=km_get(state,"managed_agents");
-    if (management) {
-        if (!json_object_is_type(management,json_type_object)) goto invalid;
-        json_object_object_foreach(management,agent,value)
-            if (!km_valid_agent(agent) || !json_object_is_type(value,json_type_boolean)) goto invalid;
-    }
+    if (ad_subagent_state_valid(km,state)<0) return -1;
+    if (!agent_flags_valid(km_get(state,"managed_agents")) ||
+        !agent_flags_valid(km_get(state,"subagent_agents"))) goto invalid;
     return 0;
 invalid:
     return km_error(km,"invalid or unsafe adapter ownership record; restore the private state backup before retrying");

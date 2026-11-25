@@ -132,13 +132,16 @@ class SkillImportTests(unittest.TestCase):
         self.assertEqual(self.aliases(), before)
         self.assertFalse((self.home / ".config/kitmux/catalog.json").exists())
 
-    def test_real_native_directories_require_explicit_migration(self):
+    def test_real_native_directories_are_skipped_with_migration_steps(self):
+        # Contract change: a real directory no longer aborts the whole import; it stays
+        # unmanaged and the warning names it with the migration command.
         alias = self.home / ".claude/skills/meeting-notes"
         alias.unlink()
         alias.mkdir()
         (alias / "SKILL.md").write_text("---\nname: meeting-notes\ndescription: Existing real directory\n---\nKeep me\n")
-        result = self.cli("import", "--from", "claude", "--apply", ok=False)
-        self.assertIn("migration", result.stderr.lower())
+        result = self.cli("import", "--from", "claude", "--apply")
+        self.assertIn(f"skill add {alias}", result.stderr)
+        self.assertEqual(set(self.catalog()["skills"]), {"code-review", "writing"})
         self.assertTrue(alias.is_dir())
         self.assertFalse(alias.is_symlink())
 

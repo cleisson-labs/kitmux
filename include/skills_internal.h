@@ -2,6 +2,9 @@
 #define KITMUX_SKILLS_INTERNAL_H
 #include "kitmux.h"
 
+/* Nested directory bound shared by local copies, Git extraction, and diffs. */
+#define KM_SKILL_MAX_DEPTH 32u
+
 typedef struct {
     char root[PATH_MAX];
     char temporary[PATH_MAX];

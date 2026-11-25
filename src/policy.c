@@ -15,12 +15,13 @@ static bool answer(char *reason, size_t size, const char *text, bool result) {
     return result;
 }
 
-bool km_effective(Km *km, const char *kind, const char *id, const char *agent, char *reason, size_t size) {
+static bool availability(Km *km, const char *kind, const char *id, const char *agent,
+                         char *reason, size_t size, bool policy) {
     json_object *resource = km_get(km_resources(km, kind), id);
     if (!resource || !km_valid_agent(agent)) return answer(reason, size, "Unavailable", false);
     json_object *enabled = km_get(resource, "enabled");
-    if (enabled && !json_object_get_boolean(enabled)) return answer(reason, size, "Globally disabled", false);
-    if (!strcmp(kind, "subagent") && !km_subagent_compatible(resource, agent, reason, size)) return false;
+    if (policy && enabled && !json_object_get_boolean(enabled)) return answer(reason, size, "Globally disabled", false);
+    if (policy && !strcmp(kind, "subagent") && !km_subagent_compatible(resource, agent, reason, size)) return false;
     const char *override = km_string(km_get(resource, "agents"), agent);
     if (override && !strcmp(override, "off")) return answer(reason, size, "Disabled for this agent", false);
     if (override && !strcmp(override, "on")) return answer(reason, size, "Direct assignment", true);
@@ -35,6 +36,14 @@ bool km_effective(Km *km, const char *kind, const char *id, const char *agent, c
         }
     }
     return answer(reason, size, "No active assignment", false);
+}
+
+bool km_effective(Km *km, const char *kind, const char *id, const char *agent, char *reason, size_t size) {
+    return availability(km, kind, id, agent, reason, size, true);
+}
+
+bool km_assigned(Km *km, const char *kind, const char *id, const char *agent) {
+    return availability(km, kind, id, agent, NULL, 0, false);
 }
 
 int km_resource_toggle(Km *km, const char *kind, int argc, char **argv) {

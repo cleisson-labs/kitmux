@@ -40,7 +40,8 @@ void km_help(FILE *out) {
         "  status [--json]    doctor    --version    --help\n\n"
         "Use sync --preview/--apply to adopt native configurations initially.\n"
         "Later catalog changes automatically sync clients already adopted.\n"
-        "Native changes may need an agent reload. Managed bridges observe policy.\n",
+        "Native changes may need an agent reload. Managed bridges apply policy live;\n"
+        "clients that ignore tool-list notifications (Codex) show changes after a restart.\n",
         KM_VERSION);
 }
 
@@ -92,11 +93,13 @@ static int sync_configured(Km *km) {
     if (km_adapter_command(km, 3, args) == 0) return 0;
     char cause[sizeof(km->error)];
     snprintf(cause, sizeof(cause), "%s", km->error);
-    return km_error(km, "Catalog saved; native sync pending: %.850s. Resolve the conflict and run sync --apply.", cause);
+    km->sync_pending = true;
+    return km_error(km, "Catalog saved; native sync pending: %.850s. Fix the cause, then run kitmux sync --apply.", cause);
 }
 
 int km_dispatch(Km *km, int argc, char **argv) {
     km->error[0] = '\0';
+    km->sync_pending = false;
     bool locked = !unlocked_command(argc, argv);
     if (locked && km_lock(km) < 0) return -1;
     int result = km_load(km);

@@ -5,7 +5,7 @@ A C terminal manager for MCP servers, Agent Skills, and custom subagents across
 clients receive them, and manage availability from an interactive terminal or
 ordinary commands.
 
-**v0.5.0 · C17 · [MIT](LICENSE)**
+**v0.6.0 · C17 · [MIT](LICENSE)**
 
 - Manage MCP servers, complete skill packages, and custom subagent definitions.
 - Organize each resource view into groups, with explicit controls for each coding client.
@@ -16,7 +16,8 @@ ordinary commands.
 [Contributing](CONTRIBUTING.md) · [Security reporting](SECURITY.md) ·
 [Architecture](docs/IMPLEMENTATION.md) · [Third-party notices](THIRD_PARTY.md)
 
-See [v0.5 notes](docs/V0.5.md) for document views and binary distribution, and
+See [v0.6 notes](docs/V0.6.md) for reliable native sync and terminal fixes,
+[v0.5 notes](docs/V0.5.md) for document views and binary distribution, and
 [v0.4 notes](docs/V0.4.md) for scoped groups and legacy catalog migration.
 
 ## Download and install
@@ -38,7 +39,7 @@ for their original installer to manage.
 ```sh
 (
   set -eu
-  kitmux_version=v0.5.0
+  kitmux_version=v0.6.0
   case "$(uname -s)" in
     Darwin) kitmux_os=darwin ;;
     Linux) kitmux_os=linux ;;
@@ -98,8 +99,8 @@ and verification finish before replacing the executable. Restart coding clients
 after upgrading so managed MCP bridges use the new binary. For binary rollback,
 run `mv "$HOME/.local/bin/kitmux.previous" "$HOME/.local/bin/kitmux"` (adjust the
 directory if overridden). This does not roll back catalog or native configuration;
-use the documented migration backup and `restore` workflow when needed. v0.4 and
-v0.5 use catalog schema 3; versions before v0.4 cannot read that schema.
+use the documented migration backup and `restore` workflow when needed. v0.4,
+v0.5, and v0.6 use catalog schema 3; versions before v0.4 cannot read that schema.
 
 ### Install and import with your local agent
 
@@ -192,11 +193,15 @@ without changing them during import; later sync manages the selected aliases,
 and restore reinstates their original targets. Canonical source packages remain
 untouched. Bundled `.system`, synced collections, and plugin caches are excluded.
 
-Real directories in owned discovery locations, symlinked discovery roots, and
-different package contents sharing one skill ID require explicit migration.
-Import fails clearly rather than selecting a conflicting package silently.
-Native Codex skill-disable controls remain in force; re-enabling a blocked skill
-requires changing that specific native override before retrying sync.
+Import skips entries it cannot adopt safely and keeps importing the rest: dangling
+links, files that are not skill packages, and real directories in owned discovery
+locations each print a warning naming the path. For a real directory, run
+`kitmux skill add PATH`, move the original aside, then enable the skill for its
+clients. Different package contents sharing one skill ID still stop the import and
+name the path; choose one package with `skill update --source`. Unusable subagent
+files are skipped the same way. Native Codex skill-disable controls remain in force,
+whether they select the skill by name or by any of its paths; re-enabling a blocked
+skill requires changing that specific native override before retrying sync.
 
 Create a group and assign it to any subset of the clients:
 
@@ -220,8 +225,16 @@ kitmux sync --apply
 
 Use `--agent codex`, `--agent claude`, or `--agent opencode` to adopt one client.
 After adoption, catalog mutations automatically sync **only adopted clients**.
-An external edit produces a conflict; Kitmux retains your desired catalog change
-and reports that native sync is pending. Resolve the conflict before retrying.
+Each client is synchronized independently: a failure in one client never blocks
+native changes for the others, and the command exits nonzero naming each failed
+client. An external edit to an owned entry produces a conflict only when the entry
+differs from what Kitmux wants; dropped client defaults (Codex `enabled = true`,
+OpenCode `disabled: false`) and deletions of entries Kitmux also wants gone are not
+conflicts. Kitmux retains your desired catalog change, reports that native sync is
+pending, and names the client, file, entry, and recovery command. Use
+`import --refresh --from CLIENT` to adopt an edit or deletion for that client only;
+inherited and group availability are left unchanged unless the native state
+contradicts them.
 
 Native configuration changes may require reloading the client or starting a new
 session. `status` reports desired availability alongside observed managed bridge
@@ -288,7 +301,7 @@ alongside effective availability; it omits MCP options and credentials.
 | `s`, `i` | Preview/apply native sync or import |
 | `u`, `b` | Preview/apply skill update or roll back |
 | `c`, `?`, `q` | Check configuration, help, quit |
-| `f` on Status | Refresh the captured process-status snapshot |
+| `f` on Status, Clients | Refresh the status snapshot or client state |
 
 The interface needs at least 74 columns and 20 rows. It handles terminal resize,
 normal exit, and interruption without leaving echo disabled.
@@ -305,6 +318,12 @@ appear under Ungrouped. Search finds resources even inside collapsed groups.
 An item appearing in several groups is one resource: edits apply everywhere,
 and bulk actions process it once. Removing a group preserves its resources.
 Groups can show mixed effective client availability when member overrides differ.
+In the assign dialog (`a`), only clients you change become explicit per-client
+overrides; unchanged clients keep following their groups, and a globally OFF item
+keeps its assignments. Space marks rows for bulk actions; marks stay selected when
+their group is collapsed or filtered out. The list reloads when another Kitmux
+process changes the catalog. A banner reports pending native sync, and the Clients
+tab shows each client's adoption, ON counts, and native check result.
 Local MCP forms offer direct/managed mode selection. Reconnect asks which client
 to target and shows its result. Status is a captured snapshot; press `f` to query
 again.
@@ -312,11 +331,13 @@ again.
 ## Custom subagents
 
 Press `3` for Subagents, select a profile, and press `a` to choose its clients.
-Space toggles a checkbox; Enter saves. `e` controls global availability. Subagents
+Space toggles a checkbox; Enter saves only the clients you changed. `e` controls
+global availability. Subagents
 use the same group union, explicit per-client off, and global off rules as skills
 and MCPs. Assignments control future native discovery, not running tasks.
 
-Import only existing subagent definitions:
+Import only existing subagent definitions. This adopts the client's subagents
+only; it does not opt that client into MCP or skill management:
 
 ```sh
 kitmux subagent import --from codex,claude,opencode --preview
@@ -420,6 +441,11 @@ For a compatible local server, use `--mode managed` when adding or editing it.
 Native settings then launch a Kitmux bridge under that server's original name.
 The bridge starts its own upstream process during capability discovery, observes
 catalog policy changes, and accepts `mcp reconnect` through a private local socket.
+Startup is asynchronous: requests queue for up to 30 seconds while the upstream
+initializes, a failed start is retried on the next request with backoff (0.5 s
+doubling to 30 s), and one `tools/list_changed` follows recovery after a failed
+tool listing. Codex currently ignores that notification, so a running Codex session
+shows toggled tools only after a restart.
 It stays registered while disabled, returns an empty tool list, and rejects stale
 calls. Removing the resource removes its owned native entry.
 
@@ -435,10 +461,13 @@ kitmux status --json
 ```
 
 Authenticated local queries report each bridge PID, its actual upstream PID,
-pending requests, and protocol. `waiting` means the client has not initialized;
-`idle` means initialized with no upstream; `running` means a live upstream was
+pending requests, protocol, and the last upstream error. `waiting` means the client
+has not initialized; `starting` means the upstream is initializing; `idle` means
+initialized with no upstream; `running` means a live upstream was
 observed; `disabled` means the bridge has observed off policy. An `inactive` result
-means no bridge was found; stale sockets are `unreachable`, and a mix of reachable and unreachable
+means no bridge was found. Sockets left by exited bridges are removed during
+status and reconnect scans; a socket whose owner is alive but unresponsive is
+`unreachable`, and a mix of reachable and unreachable
 connections is `partial`. Direct connections remain `unverified`. These process
 observations do not certify that the client's tool list refreshed.
 Queries have a 500ms/64-endpoint budget per MCP/client; JSON marks incomplete
@@ -464,8 +493,16 @@ mistaken for another call. They count toward the 64-request limit. Only correlat
 progress is forwarded. Upstream initialization instructions are not surfaced by
 the lazy tools-only bridge; use direct mode for servers that require them.
 
+Upstreams may advertise other capabilities, but only tools are bridged; an
+upstream without the tools capability is rejected with its own error. Messages are
+forwarded as their original lines, blank lines and up to 64 consecutive non-JSON
+upstream lines are skipped, and `ping` is answered before initialization. Stopping
+an upstream closes its stdin first and waits up to 1 second before terminating its
+process group. Reconnect reports each failing bridge's reason.
+
 Upstream stderr is discarded to avoid exposing credentials. Limits include a
-1 MiB protocol message, 64 pending requests, and bounded startup/shutdown. Control
+1 MiB protocol message, 512 levels of JSON nesting, 64 pending requests, and
+bounded startup/shutdown. Control
 sockets require a private, sufficiently short state path; the CLI reports an
 actionable error if the platform socket-path limit is exceeded.
 
@@ -485,7 +522,9 @@ Complete skill packages are copied into a SHA256-addressed store outside agent
 discovery roots. Downloads use Git objects rather than a checkout; package scripts,
 checkout filters, and hooks do not execute during installation. Source revisions
 are pinned and packages start unassigned. Updates preserve agent choices and show
-the revision plus changed files before applying.
+the revision plus changed files before applying. Installed revisions are read-only
+(files 0400/0500, directories 0500); restore write permission before deleting the
+store by hand. Git runs without inherited repository variables such as `GIT_DIR`.
 
 The installer checks standard YAML metadata, rejects package-internal symlinks and
 special files, and bounds files, total size, directory depth, and entry count.
@@ -494,7 +533,12 @@ aliases or unsupported collection layouts require deliberate migration.
 
 Client adapters own only their projections and visibility entries. OpenCode's
 compatibility discovery from Claude/shared skill directories is handled through
-explicit skill permissions; disabling suggestions alone is insufficient. A skill
+explicit skill permissions; disabling suggestions alone is insufficient. Kitmux
+owns only the OpenCode permission rules it adds: other edits to the array are kept,
+a Kitmux allow rule overrides a native deny while Kitmux enables the skill, and
+restore removes Kitmux's rules. Name-based hides (Claude `skillOverrides`, OpenCode
+denies) are written only for skills whose Kitmux projection that client can see. A
+deleted Kitmux link is recreated, or left absent when the skill is off. A skill
 already loaded into a conversation remains in its context until a fresh session.
 
 Removing a skill detaches its owned projections after sync and cleans group
@@ -530,6 +574,15 @@ an error instead of a whole-file rewrite.
 Imported Codex stdio definitions can switch between direct and managed mode while
 preserving native policy and comments. Changes to multiline command/argument
 values or unsupported TOML key layouts fail closed and retain the native file.
+
+Kitmux writes an MCP into a client's configuration only when it is ON for that
+client or the client already has that entry, so environment values and credentials
+never spread to unassigned clients. Entries Kitmux created are removed when turned
+off; imported Codex and OpenCode entries keep their native disabled form, while
+Claude entries are removed. Codex entries omit the default `enabled = true`, new
+JSON entries follow the file's indentation, and a managed bridge keeps its existing
+Kitmux executable while that file exists. Claude SSE endpoints are not projected
+into Codex or OpenCode, which support only Streamable HTTP.
 
 Owned entries have before/after records, while unrelated settings and JSONC/TOML
 comments are preserved. Writes use a catalog lock, atomic replacement, private
@@ -588,7 +641,7 @@ AddressSanitizer and UndefinedBehaviorSanitizer.
 See [implementation progress](docs/IMPLEMENTATION.md), the original
 [product plan](docs/PLAN.md), the [concept diagram](docs/kitmux-concept.html), and
 [third-party notices](THIRD_PARTY.md).
-The [v0.5 release notes](docs/V0.5.md) describe the current release.
+The [v0.6 release notes](docs/V0.6.md) describe the current release.
 
 ## Contributing and license
 

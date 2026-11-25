@@ -140,9 +140,13 @@ class RuntimeStatusTests(unittest.TestCase):
         endpoint.close()
         self.addCleanup(path.unlink)
 
+    def live_owner(self, path):
+        # A dead owner's socket is pruned; a live non-bridge PID keeps it stale.
+        return path.with_name(path.name.split(".")[0] + f".{os.getpid()}")
+
     def test_stale_socket_is_unreachable_and_never_implies_running(self):
         harness = self.connection()
-        path = next((self.home / ".local/state/kitmux/r").iterdir())
+        path = self.live_owner(next((self.home / ".local/state/kitmux/r").iterdir()))
         harness.close_bridge()
         self.stale_socket(path)
         observed = self.status()
@@ -157,7 +161,7 @@ class RuntimeStatusTests(unittest.TestCase):
         upstream_pid = int(live.call()["result"]["content"][0]["text"])
         before = set((self.home / ".local/state/kitmux/r").iterdir())
         stale = self.connection()
-        path = (set((self.home / ".local/state/kitmux/r").iterdir()) - before).pop()
+        path = self.live_owner((set((self.home / ".local/state/kitmux/r").iterdir()) - before).pop())
         stale.close_bridge()
         self.stale_socket(path)
         observed = self.status()

@@ -78,11 +78,11 @@ class AdapterTests(unittest.TestCase):
         self.cli("doctor", "--agent", "opencode")
 
     def test_unowned_collision_requires_import(self):
-        original = '{"mcpServers":{"example":{"command":"/usr/bin/false","env":{"TOKEN":"private"}}},"theme":"dark"}'
+        original = '{"mcpServers":{"example":{"command":"/usr/bin/false","env":{"TOKEN":"fixture-private-token"}}},"theme":"dark"}'
         path = self.write(".claude.json", original)
         self.registered("claude")
         result = self.cli("sync", "--apply", "--agent", "claude", ok=False)
-        self.assertNotIn("private", result.stderr + result.stdout)
+        self.assertNotIn("fixture-private-token", result.stderr + result.stdout)
         self.assertEqual(path.read_text(), original)
 
     def test_import_adopts_and_restore_preserves_unowned_settings(self):
@@ -147,11 +147,14 @@ class AdapterTests(unittest.TestCase):
 
     def test_managed_disabled_bridges_remain_registered(self):
         self.cli("mcp", "add", "managed", "--command", "/usr/bin/true", "--mode", "managed")
+        for agent in ("codex", "claude", "opencode"):
+            self.cli("mcp", "enable", "managed", "--agent", agent)
         self.cli("sync", "--apply")
+        self.cli("mcp", "disable", "managed")
         codex = tomllib.loads((self.home / ".codex/config.toml").read_text())["mcp_servers"]["managed"]
         claude = json.loads((self.home / ".claude.json").read_text())["mcpServers"]["managed"]
         opencode = json.loads((self.home / ".config/opencode/opencode.json").read_text())["mcp"]["servers"]["managed"]
-        self.assertTrue(codex["enabled"])
+        self.assertTrue(codex.get("enabled", True))
         self.assertIn("bridge", codex["args"])
         self.assertIn("--home", claude["args"])
         self.assertFalse(opencode["disabled"])
@@ -177,7 +180,9 @@ class AdapterTests(unittest.TestCase):
         self.cli("mcp", "group", "add", "seed")
         path = self.home / ".config/kitmux/catalog.json"
         catalog = json.loads(path.read_text())
-        catalog["skills"]["review"] = {"name":"review", "path":str(self.home / "unused"), "enabled":True, "agents":{}}
+        # Kitmux denies a skill in OpenCode only where its own projection is visible there.
+        catalog["skills"]["review"] = {"name":"review", "path":str(self.home / "unused"), "enabled":True,
+                                       "agents":{"claude":"on"}}
         path.write_text(json.dumps(catalog))
         self.cli("sync", "--apply", "--agent", "opencode")
         rules = json.loads((self.home / ".config/opencode/opencode.json").read_text())["permissions"]
@@ -218,7 +223,9 @@ class AdapterTests(unittest.TestCase):
         self.cli("mcp", "group", "add", "seed")
         path = self.home / ".config/kitmux/catalog.json"
         catalog = json.loads(path.read_text())
-        catalog["skills"]["review"] = {"name":"review", "path":str(self.home / "unused"), "enabled":True, "agents":{}}
+        # The deny is needed because the Claude projection is visible to OpenCode.
+        catalog["skills"]["review"] = {"name":"review", "path":str(self.home / "unused"), "enabled":True,
+                                       "agents":{"claude":"on"}}
         path.write_text(json.dumps(catalog))
         result = self.cli("sync", "--apply", "--agent", "opencode", ok=False)
         self.assertIn("permission", result.stderr.lower())
@@ -265,9 +272,12 @@ class AdapterTests(unittest.TestCase):
             self.cli("sync", "--apply")
             for agent, root in roots.items():
                 self.assertEqual((self.home / root / "review").is_symlink(), selected[agent]=="on", (mask, agent))
-            rules = json.loads((self.home / ".config/opencode/opencode.json").read_text()).get("permissions", [])
+            config = self.home / ".config/opencode/opencode.json"
+            rules = json.loads(config.read_text()).get("permissions", []) if config.exists() else []
             deny = {"action":"skill", "resource":"review", "effect":"deny"}
-            self.assertEqual(deny in rules, selected["opencode"]=="off", mask)
+            # OpenCode also reads the Claude and shared Codex roots; deny only when a projection is visible.
+            visible = selected["codex"]=="on" or selected["claude"]=="on"
+            self.assertEqual(deny in rules, selected["opencode"]=="off" and visible, mask)
 
 
 if __name__ == "__main__":

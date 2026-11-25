@@ -10,6 +10,30 @@
 static volatile sig_atomic_t interrupted;
 static void stop_signal(int signal_number) { (void)signal_number; interrupted = 1; }
 
+static int invalid_input(Rt *rt) {
+    json_object *id = rt_line_id(&rt->downstream);
+    int status = rt_error(rt, id, -32700, "Invalid JSON-RPC input");
+    json_object_put(id);
+    return status;
+}
+
+/* Skip non-protocol noise. A rejected response that still names an outstanding
+ * request fails only that request; anything else stops the upstream. */
+static int invalid_output(Rt *rt) {
+    if (rt_noise(&rt->upstream)) return 0;
+    json_object *id = rt_line_id(&rt->upstream);
+    const char *key = id ? json_object_to_json_string_ext(id, JSON_C_TO_STRING_PLAIN) : NULL;
+    json_object *record = key && !rt->starting ? km_get(rt->pending, key) : NULL;
+    int status = 0;
+    if (record) {
+        if (!json_object_get_boolean(km_get(record, "cancelled")))
+            status = rt_error(rt, km_get(record, "id"), -32000, "MCP response could not be parsed by the bridge; it may exceed the nesting limit");
+        json_object_object_del(rt->pending, key);
+    } else rt_upstream_failed(rt, "Invalid MCP input; completion unknown, call not replayed");
+    json_object_put(id);
+    return status;
+}
+
 static int drain(Rt *rt, bool downstream) {
     RtReader *reader = downstream ? &rt->downstream : &rt->upstream;
     for (;;) {
@@ -17,10 +41,11 @@ static int drain(Rt *rt, bool downstream) {
         int next = rt_next(rt->km, reader, &packet);
         if (!next) return 0;
         if (next < 0) {
-            if (downstream) { if (rt_error(rt, NULL, -32700, "Invalid JSON-RPC input")) return -1; continue; }
-            rt_stop(rt, "Invalid MCP input; completion unknown, call not replayed");
-            return rt_changed(rt);
+            if (downstream ? invalid_input(rt) : invalid_output(rt)) return -1;
+            if (!downstream && rt->upstream_out < 0) return 0;
+            continue;
         }
+        reader->noise = 0;
         int status = downstream ? rt_client(rt, packet) : rt_server(rt, packet);
         json_object_put(packet);
         if (status) return -1;
@@ -30,7 +55,9 @@ static int drain(Rt *rt, bool downstream) {
 
 static int event_loop(Rt *rt) {
     while (!interrupted) {
-        if (rt_refresh(rt, false) || drain(rt, true) || drain(rt, false)) return -1;
+        if (rt_refresh(rt, false)) return -1;
+        rt_tick(rt);
+        if (drain(rt, true) || drain(rt, false)) return -1;
         struct pollfd fds[] = {{STDIN_FILENO, POLLIN, 0}, {rt->control, POLLIN, 0}, {rt->upstream_out, POLLIN, 0}};
         int count = poll(fds, 3, 100);
         if (count < 0 && errno == EINTR) continue;
@@ -42,10 +69,9 @@ static int event_loop(Rt *rt) {
         }
         if (fds[1].revents & POLLIN) rt_control_accept(rt);
         if (fds[2].fd == rt->upstream_out && rt->upstream_out >= 0 && (fds[2].revents & (POLLIN | POLLHUP | POLLERR))) {
-            if (rt_read(rt->km, rt->upstream_out, &rt->upstream) <= 0) {
-                rt_stop(rt, "MCP disconnected; completion unknown, call not replayed");
-                if (rt_changed(rt)) return -1;
-            }
+            if (rt_read(rt->km, rt->upstream_out, &rt->upstream) <= 0)
+                rt_upstream_failed(rt, rt->starting ? "MCP upstream exited during startup; use direct mode for diagnostics"
+                                                    : "MCP disconnected; completion unknown, call not replayed");
         }
     }
     return 0;
@@ -53,6 +79,7 @@ static int event_loop(Rt *rt) {
 
 static void release(Rt *rt) {
     rt_stop(rt, NULL);
+    rt_reconnect_finish(rt, "failed", "MCP bridge exited before discovery completed");
     if (rt->control >= 0) close(rt->control);
     if (rt->control_bound) unlink(rt->socket_path);
     json_object_put(rt->initialize);
@@ -67,7 +94,7 @@ static int bridge(Km *km, const char *id, const char *agent) {
     const char *mode = km_string(server, "mode"), *transport = km_string(server, "transport");
     if (!server || !mode || strcmp(mode, "managed") || !transport || strcmp(transport, "stdio"))
         return km_error(km, "Bridge requires an existing managed local stdio MCP");
-    Rt rt = {.km = km, .id = id, .agent = agent, .upstream_in = -1, .upstream_out = -1, .control = -1};
+    Rt rt = {.km = km, .id = id, .agent = agent, .upstream_in = -1, .upstream_out = -1, .control = -1, .reconnect_fd = -1};
     rt.pending = json_object_new_object();
     rt.downstream.bytes = malloc(RT_MAX_LINE + 1);
     rt.upstream.bytes = malloc(RT_MAX_LINE + 1);
@@ -75,17 +102,20 @@ static int bridge(Km *km, const char *id, const char *agent) {
     if (rt_control_open(&rt) || rt_refresh(&rt, true)) { release(&rt); return -1; }
     struct sigaction handler = {.sa_handler = stop_signal}, ignore = {.sa_handler = SIG_IGN};
     struct sigaction child = {.sa_handler = SIG_DFL};
-    struct sigaction old_int, old_term, old_pipe, old_child;
+    struct sigaction old_int, old_term, old_hup, old_pipe, old_child;
     sigemptyset(&handler.sa_mask); sigemptyset(&ignore.sa_mask);
     interrupted = 0;
-    sigaction(SIGINT, &handler, &old_int); sigaction(SIGTERM, &handler, &old_term); sigaction(SIGPIPE, &ignore, &old_pipe);
+    /* A closed terminal sends SIGHUP; stop like SIGTERM so the socket is removed. */
+    sigaction(SIGINT, &handler, &old_int); sigaction(SIGTERM, &handler, &old_term); sigaction(SIGHUP, &handler, &old_hup);
+    sigaction(SIGPIPE, &ignore, &old_pipe);
     sigemptyset(&child.sa_mask); sigaction(SIGCHLD, &child, &old_child);
     int old_flags = fcntl(STDOUT_FILENO, F_GETFL);
     rt_nonblock(STDOUT_FILENO);
     int status = event_loop(&rt);
     release(&rt);
     fcntl(STDOUT_FILENO, F_SETFL, old_flags);
-    sigaction(SIGINT, &old_int, NULL); sigaction(SIGTERM, &old_term, NULL); sigaction(SIGPIPE, &old_pipe, NULL);
+    sigaction(SIGINT, &old_int, NULL); sigaction(SIGTERM, &old_term, NULL); sigaction(SIGHUP, &old_hup, NULL);
+    sigaction(SIGPIPE, &old_pipe, NULL);
     sigaction(SIGCHLD, &old_child, NULL);
     return status;
 }

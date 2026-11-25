@@ -1,4 +1,5 @@
 #include "kitmux.h"
+#include "subagents.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -102,6 +103,17 @@ static int group_list(Km *km, const char *kind, bool as_json) {
     return 0;
 }
 
+/* Group membership can assign a subagent to a client that has no native variant. */
+static int warn_members(Km *km, const char *kind, json_object *group, int result) {
+    if (result < 0 || strcmp(kind, "subagent")) return result;
+    json_object *members = km_get(group, "members");
+    for (size_t i = 0; i < json_object_array_length(members); ++i) {
+        const char *member = json_object_get_string(json_object_array_get_idx(members, i));
+        if (!strncmp(member, "subagent:", 9)) km_subagent_warn_assignments(km, member + 9);
+    }
+    return result;
+}
+
 int km_scoped_group_command(Km *km, const char *kind, int argc, char **argv) {
     if (!group_kind(kind)) return km_error(km, "Unknown group resource kind");
     if (!argc || !strcmp(argv[0], "list")) {
@@ -116,9 +128,10 @@ int km_scoped_group_command(Km *km, const char *kind, int argc, char **argv) {
     json_object *groups = km_get(km->catalog, "groups"), *group = km_get(groups, key);
     if (!group) return km_error(km, "Unknown %s group: %s", kind, id);
     if (!strcmp(verb, "show") && argc == 2) { puts(json_object_to_json_string_ext(group, JSON_C_TO_STRING_PRETTY)); return 0; }
-    if (!strcmp(verb, "assign") && argc == 4 && !strcmp(argv[2], "--agents")) return group_assign(km, group, argv[3]);
+    if (!strcmp(verb, "assign") && argc == 4 && !strcmp(argv[2], "--agents"))
+        return warn_members(km, kind, group, group_assign(km, group, argv[3]));
     if ((!strcmp(verb, "include") || !strcmp(verb, "exclude")) && argc >= 3)
-        return group_members(km, kind, group, argc - 2, argv + 2, !strcmp(verb, "include"));
+        return warn_members(km, kind, group, group_members(km, kind, group, argc - 2, argv + 2, !strcmp(verb, "include")));
     if ((!strcmp(verb, "enable") || !strcmp(verb, "disable")) && argc == 2) {
         bool enabled = !strcmp(verb, "enable");
         if (json_object_get_boolean(km_get(group, "enabled")) == enabled) return 0;

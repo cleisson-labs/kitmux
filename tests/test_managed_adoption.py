@@ -117,7 +117,7 @@ value = "preserve"
         managed_text = config.read_text()
         managed = tomllib.loads(managed_text)["mcp_servers"]["no_args"]
         self.assertIn("bridge", managed["args"])
-        self.assertTrue(managed["enabled"])
+        self.assertTrue(managed.get("enabled", True))
         self.assertEqual(managed["env"], {"TOKEN": "fixture-value"})
         self.assertIn("# preserve command comment", managed_text)
 
@@ -126,7 +126,7 @@ value = "preserve"
         direct = tomllib.loads(direct_text)["mcp_servers"]["no_args"]
         self.assertEqual(direct["command"], "/usr/bin/native")
         self.assertNotIn("args", direct)
-        self.assertTrue(direct["enabled"])
+        self.assertTrue(direct.get("enabled", True))
         self.assertEqual(direct["env"], {"TOKEN": "fixture-value"})
 
         self.cli("restore", "--apply", "--agent", "codex")

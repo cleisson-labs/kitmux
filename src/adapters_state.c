@@ -125,9 +125,9 @@ static int sync_link_parent(Km *km, const char *path) {
     if (!slash || slash==parent) return km_error(km,"invalid skill projection parent");
     *slash=0;
     int fd=open(parent,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
-    if (fd<0) return km_error(km,"cannot open skill projection parent for sync");
+    if (fd<0) return km_error(km,"cannot open skill projection directory %s for sync: %s",parent,strerror(errno));
     int result=fsync(fd); close(fd);
-    return result<0 ? km_error(km,"skill projection directory sync failed") : 0;
+    return result<0 ? km_error(km,"cannot sync skill projection directory %s",parent) : 0;
 }
 
 static int apply_link(AdRun *run, json_object *link) {
@@ -137,22 +137,25 @@ static int apply_link(AdRun *run, json_object *link) {
     bool exists=lstat(path,&st)==0;
     if (exists) {
         ssize_t n=readlink(path,actual,sizeof(actual)-1);
-        if (n<0) return km_error(run->km,"skill projection conflict; expected an owned symlink");
+        if (n<0 || (size_t)n>=sizeof(actual)-1) return km_error(run->km,"skill projection %s is no longer a link; retry `kitmux sync --apply`",path);
         actual[n]=0;
-        if (!before || strcmp(actual,before)) return km_error(run->km,"skill projection changed during sync");
-    } else if (errno!=ENOENT || before) return km_error(run->km,"skill projection changed during sync");
+        if (!before || strcmp(actual,before)) return km_error(run->km,"skill projection %s changed during sync; retry `kitmux sync --apply`",path);
+    } else if (errno!=ENOENT || before) return km_error(run->km,"skill projection %s changed during sync; retry `kitmux sync --apply`",path);
     if (target && exists && !strcmp(actual,target)) return 0;
     if (!target) {
         if (!exists) return 0;
-        if (unlink(path)<0) return km_error(run->km,"cannot detach owned skill");
+        if (unlink(path)<0) return km_error(run->km,"cannot detach skill projection %s: %s",path,strerror(errno));
         return sync_link_parent(run->km,path);
     }
     char parent[PATH_MAX], temporary[PATH_MAX];
     snprintf(parent,sizeof(parent),"%s",path); *strrchr(parent,'/')=0;
     if (km_mkdirs(run->km,parent)<0) return -1;
     if (km_path(run->km,temporary,sizeof(temporary),"%s.kitmux-%ld",path,(long)getpid())<0) return -1;
-    if (symlink(target,temporary)<0) return km_error(run->km,"cannot stage skill symlink");
-    if (rename(temporary,path)<0) { unlink(temporary); return km_error(run->km,"cannot apply skill symlink"); }
+    if (symlink(target,temporary)<0) return km_error(run->km,"cannot stage skill projection %s: %s",path,strerror(errno));
+    if (rename(temporary,path)<0) {
+        int saved=errno; unlink(temporary);
+        return km_error(run->km,"cannot apply skill projection %s: %s",path,strerror(saved));
+    }
     return sync_link_parent(run->km,path);
 }
 

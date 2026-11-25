@@ -177,7 +177,9 @@ class AdapterTests(unittest.TestCase):
         self.cli("mcp", "group", "add", "seed")
         path = self.home / ".config/kitmux/catalog.json"
         catalog = json.loads(path.read_text())
-        catalog["skills"]["review"] = {"name":"review", "path":str(self.home / "unused"), "enabled":True, "agents":{}}
+        # Kitmux denies a skill in OpenCode only where its own projection is visible there.
+        catalog["skills"]["review"] = {"name":"review", "path":str(self.home / "unused"), "enabled":True,
+                                       "agents":{"claude":"on"}}
         path.write_text(json.dumps(catalog))
         self.cli("sync", "--apply", "--agent", "opencode")
         rules = json.loads((self.home / ".config/opencode/opencode.json").read_text())["permissions"]
@@ -218,7 +220,9 @@ class AdapterTests(unittest.TestCase):
         self.cli("mcp", "group", "add", "seed")
         path = self.home / ".config/kitmux/catalog.json"
         catalog = json.loads(path.read_text())
-        catalog["skills"]["review"] = {"name":"review", "path":str(self.home / "unused"), "enabled":True, "agents":{}}
+        # The deny is needed because the Claude projection is visible to OpenCode.
+        catalog["skills"]["review"] = {"name":"review", "path":str(self.home / "unused"), "enabled":True,
+                                       "agents":{"claude":"on"}}
         path.write_text(json.dumps(catalog))
         result = self.cli("sync", "--apply", "--agent", "opencode", ok=False)
         self.assertIn("permission", result.stderr.lower())
@@ -265,9 +269,12 @@ class AdapterTests(unittest.TestCase):
             self.cli("sync", "--apply")
             for agent, root in roots.items():
                 self.assertEqual((self.home / root / "review").is_symlink(), selected[agent]=="on", (mask, agent))
-            rules = json.loads((self.home / ".config/opencode/opencode.json").read_text()).get("permissions", [])
+            config = self.home / ".config/opencode/opencode.json"
+            rules = json.loads(config.read_text()).get("permissions", []) if config.exists() else []
             deny = {"action":"skill", "resource":"review", "effect":"deny"}
-            self.assertEqual(deny in rules, selected["opencode"]=="off", mask)
+            # OpenCode also reads the Claude and shared Codex roots; deny only when a projection is visible.
+            visible = selected["codex"]=="on" or selected["claude"]=="on"
+            self.assertEqual(deny in rules, selected["opencode"]=="off" and visible, mask)
 
 
 if __name__ == "__main__":

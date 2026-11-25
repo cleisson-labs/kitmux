@@ -95,6 +95,7 @@ class ResourceDetailsTests(TerminalTestCase):
         self.run_cli("skill", "add", str(package))
         catalog = json.loads(self.catalog_path().read_text())
         installed = Path(catalog["skills"]["guide"]["path"]) / "SKILL.md"
+        installed.parent.chmod(0o700)  # installed revisions are read-only; simulate out-of-band removal
         installed.unlink()
         before = self.snapshot()
         terminal = self.start()
